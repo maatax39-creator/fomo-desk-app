@@ -820,8 +820,30 @@
   }
 
   function lockScreen() {
-    return '<div class="lock"><h1>Grok Bot</h1><p>Open the link from Telegram</p></div>';
+    return '<div class="lock"><h1>Grok Bot</h1><p>Open the link from Telegram</p>' +
+      '<p style="margin-top:20px">Or copy the desk link from Telegram and paste it here</p>' +
+      '<input id="lock-link" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste desk link" ' +
+      'style="margin-top:12px;width:280px;max-width:80vw;height:44px;border-radius:12px;border:1px solid #38383a;background:#1c1c1e;color:#fff;padding:0 12px;font-size:16px">' +
+      '<button type="button" onclick="window.__deskConnect()" ' +
+      'style="margin-top:12px;width:280px;max-width:80vw;height:44px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:17px;font-weight:600">Connect</button>' +
+      '<p id="lock-msg" style="margin-top:10px;color:#ff453a;font-size:14px"></p></div>';
   }
+
+  window.__deskConnect = function () {
+    var el = document.getElementById("lock-link");
+    var raw = (el && el.value || "").trim();
+    var i = raw.indexOf("#");
+    var frag = i >= 0 ? raw.slice(i + 1) : raw;
+    var out = {};
+    frag.split("&").forEach(function (part) {
+      var j = part.indexOf("=");
+      if (j > 0) out[decodeURIComponent(part.slice(0, j))] = decodeURIComponent(part.slice(j + 1));
+    });
+    var msg = document.getElementById("lock-msg");
+    if (!out.t || !out.d) { if (msg) msg.textContent = "That link is missing its key. Copy the whole link."; return; }
+    saveStored({ t: out.t, d: out.d, u: (out.u || out.s || DEFAULT_SUPABASE).replace(/\/$/, "") });
+    location.replace(location.pathname + location.search);
+  };
 
   /* ---------- agent card body ---------- */
 
