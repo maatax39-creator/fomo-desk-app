@@ -62,7 +62,13 @@
     };
     if (location.hash) {
       if (cfg.t && cfg.d) saveStored(cfg);
-      history.replaceState(null, "", location.pathname + location.search);
+      // iPhone: "Add to Home Screen" saves the current URL, and the home-screen
+      // app does not share Safari's storage. So keep the fragment while running
+      // in a browser tab; strip it only inside the installed (standalone) app.
+      // The fragment is never sent to any server.
+      var standalone = window.navigator.standalone === true ||
+        (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+      if (standalone) history.replaceState(null, "", location.pathname + location.search);
     }
     return cfg;
   }
