@@ -2,6 +2,7 @@
   "name": "Grok Bot",
   "short_name": "Grok Bot",
   "description": "Private FOMO trading desk",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",

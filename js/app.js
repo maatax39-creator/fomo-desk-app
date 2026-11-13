@@ -204,13 +204,15 @@
       getJson("chart-" + state.range + ".json").catch(function () { return getJson("chart.json"); }),
       getJson("activity.json"),
       getJson("account.json"),
-      getJson("settings.json")
+      getJson("settings.json"),
+      getJson("recap.json").catch(function () { return null; })
     ]).then(function (arr) {
       state.data.state = arr[0];
       state.data.charts[state.range] = arr[1];
       state.data.activity = arr[2];
       state.data.account = arr[3];
       state.data.settings = arr[4];
+      if (arr[5]) state.data.recap = arr[5];
       state.offline = false;
       state.lastOk = new Date();
       state.lastError = null;
@@ -918,6 +920,32 @@
 
   /* ---------- pages ---------- */
 
+
+  function renderRecap() {
+    var r = state.data.recap || {};
+    var html = '<div class="group recap-card"><div class="group-title">Session recap</div>';
+    html += '<div class="list">';
+    html += '<div class="list-row"><span class="lbl">Trades</span><span class="val num">' + esc(String(r.trades || 0)) + "</span></div>";
+    html += '<div class="list-row"><span class="lbl">Win rate</span><span class="val num">' + esc((r.win_rate == null ? 0 : r.win_rate) + "%") + "</span></div>";
+    html += '<div class="list-row"><span class="lbl">Stop rate</span><span class="val num">' + esc((r.stop_rate == null ? 0 : r.stop_rate) + "%") + "</span></div>";
+    var net = r.net_pnl_usd;
+    var netCls = net > 0 ? "up" : net < 0 ? "down" : "";
+    html += '<div class="list-row"><span class="lbl">Net after fees</span><span class="val num ' + netCls + '">' +
+      esc((net == null ? "$0.00" : (net >= 0 ? "+$" : "-$") + Math.abs(Number(net)).toFixed(2))) + "</span></div>";
+    var bw = r.biggest_win;
+    html += '<div class="list-row"><span class="lbl">Biggest win</span><span class="val num">' +
+      esc(bw && bw.pnl_usd != null ? ((bw.pnl_usd >= 0 ? "+$" : "-$") + Math.abs(bw.pnl_usd).toFixed(2) + (bw.multiple ? " · " + Number(bw.multiple).toFixed(1) + "x" : "")) : "—") +
+      "</span></div>";
+    var bb = r.biggest_buy;
+    html += '<div class="list-row"><span class="lbl">Biggest buy</span><span class="val num">' +
+      esc(bb && bb.size_usd != null ? "$" + Number(bb.size_usd).toFixed(2) : "—") + "</span></div>";
+    var miles = r.milestones_hit || [];
+    var xs = miles.map(function (m) { return (m.multiple != null ? m.multiple : m) + "x"; }).join(", ");
+    html += '<div class="list-row"><span class="lbl">Milestones</span><span class="val">' + esc(xs || "none yet") + "</span></div>";
+    html += "</div></div>";
+    return html;
+  }
+
   function pageHome() {
     var st = state.data.state || {};
     var chart = state.data.charts[state.range] || {};
@@ -939,6 +967,7 @@
     html += '<div class="ranges">' + RANGES.map(function (r) {
       return '<button data-range="' + r + '" class="' + (state.range === r ? "on" : "") + '">' + r + "</button>";
     }).join("") + "</div>";
+    html += renderRecap();
     html += '<div class="section-h"><h2>Agents <span class="sub">· ' + running + " running</span></h2></div>";
     html += '<div class="carousel">';
     (st.agents || []).forEach(function (a) {
@@ -1115,6 +1144,7 @@
     html += '<div class="tg-note" style="padding:8px 16px 0">Change in Telegram: <code class="cmd">/mode LIVE</code> or <code class="cmd">/set desk.paper_start_stack ' +
       esc(acc.stack == null ? "" : acc.stack) + "</code>. Switching to LIVE needs a full PAPER night and you typing LIVE.</div>";
 
+    html += renderRecap();
     html += '<div class="group"><div class="group-title">FOMO</div><div class="list">';
     if (acc.profile_url) {
       html += '<a class="list-row" href="' + esc(acc.profile_url) + '" rel="noopener" target="_blank"><span class="lbl">Your FOMO profile</span><span class="val">' +
@@ -1133,7 +1163,7 @@
 
     var groups = [
       ["scanner", "Scanner"], ["auditor", "Auditor"], ["analyst", "Analyst"],
-      ["executor", "Executor"], ["risk", "Risk"], ["desk", "Desk"]
+      ["executor", "Executor"], ["risk", "Risk"], ["devwatch", "Dev Watch"], ["exits", "Exits"], ["milestones", "Milestones"], ["xscout", "X scout"], ["desk", "Desk"]
     ];
     groups.forEach(function (g) {
       html += '<div class="group"><div class="group-title">' + g[1] + "</div><div class=\"list\">";

@@ -701,3 +701,7 @@ canvas { display: block; }
   z-index: 80;
   pointer-events: none;
 }
+
+.recap-card { margin: 16px 16px 8px; }
+.recap-card .val.up { color: var(--green); }
+.recap-card .val.down { color: var(--red); }
