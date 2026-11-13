@@ -420,8 +420,8 @@
     ctx.stroke();
     ctx.restore();
 
-    if (empty && pts.length <= 2) {
-      /* empty state: dashed start line only, caption is HTML */
+    if (empty) {
+      /* no trades yet: dashed start line only; caption is HTML */
       return;
     }
 

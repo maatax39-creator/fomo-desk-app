@@ -157,7 +157,7 @@ canvas { display: block; }
   -webkit-overflow-scrolling: touch;
   padding-bottom: 12px;
 }
-.screen.with-tabs { padding-bottom: calc(12px + var(--tab-h) + var(--safe-b)); }
+.screen.with-tabs { padding-bottom: calc(28px + var(--tab-h) + var(--safe-b)); }
 .screen.push { padding-bottom: calc(24px + var(--safe-b)); }
 
 /* ---------- home balance ---------- */
