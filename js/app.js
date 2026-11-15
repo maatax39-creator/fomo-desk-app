@@ -1072,7 +1072,7 @@
         html += '<ul class="feed">';
         waits.forEach(function (w) {
           html += '<li class="pass" data-coin="' + esc(w.mint || "") + '"><span class="nm">' + esc(w.name || (w.mint || "").slice(0, 6)) +
-            "</span><span class="why">waiting for dip</span></li>";
+            '</span><span class="why">waiting for dip</span></li>';
         });
         html += "</ul>";
       } else {
