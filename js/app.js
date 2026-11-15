@@ -1,25 +1,32 @@
-/* Grok Bot · STEP 8. Plain JS, no frameworks, no CDNs.
+/* FOMO Desk · app v2. Plain JS, no frameworks, no CDNs.
    Config comes only from the URL fragment, then localStorage.
-   FOMO URLs are taken from JSON as-is and never rewritten. */
+   FOMO URLs are taken from the published JSON as-is and never rebuilt here.
+   Only real desk data is shown; nothing is simulated. */
 (function () {
   "use strict";
 
   var DEFAULT_SUPABASE = "https://latlkpoibmnqveeonxhx.supabase.co";
   var POLL_MS = 15000;
+  var STALE_MS = 150000;
+  var TZ = "Europe/Zagreb";
   var STORAGE_KEY = "desk.cfg";
   var SEEN_KEY = "desk.seenActivity";
+  var TOAST_KEY = "desk.toastId";
+  var ATH_KEY = "desk.ath";
+  var MILES_KEY = "desk.milesSeen";
   var RANGES = ["LIVE", "1H", "4H", "1D", "1W", "ALL"];
   var AGENTS = ["scanner", "auditor", "analyst", "executor", "risk"];
   var AGENT_TITLE = {
-    scanner: "Scanner",
-    auditor: "Auditor",
-    analyst: "Analyst",
-    executor: "Executor",
-    risk: "Risk"
+    scanner: "Scanner", auditor: "Auditor", analyst: "Analyst",
+    executor: "Executor", risk: "Risk", devwatch: "Dev Watch"
   };
+  var AGENT_EMOJI = {
+    scanner: "📡", auditor: "🔬", analyst: "👾", executor: "⚙️", risk: "🛡️", devwatch: "👀"
+  };
+  var C = { green: "#4ADE80", red: "#F87171", blue: "#3B82F6", grey: "#8a8a8a", amber: "#FBBF24", cyan: "#67E8F9" };
   var REDUCE = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  /* ---------- config (fragment → localStorage, then strip) ---------- */
+  /* ---------- config (fragment → localStorage) ---------- */
 
   function readFragment() {
     var raw = (location.hash || "").replace(/^#/, "");
@@ -27,29 +34,18 @@
     var out = {};
     raw.split("&").forEach(function (part) {
       var i = part.indexOf("=");
-      if (i < 0) {
-        if (part) out[decodeURIComponent(part)] = "";
-        return;
-      }
+      if (i < 0) { if (part) out[decodeURIComponent(part)] = ""; return; }
       out[decodeURIComponent(part.slice(0, i))] = decodeURIComponent(part.slice(i + 1));
     });
     return out;
   }
 
   function loadStored() {
-    try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY) || "null") || {};
-    } catch (e) {
-      return {};
-    }
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "null") || {}; } catch (e) { return {}; }
   }
 
   function saveStored(cfg) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      t: cfg.t || "",
-      d: cfg.d || "",
-      u: cfg.u || ""
-    }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ t: cfg.t || "", d: cfg.d || "", u: cfg.u || "" }));
   }
 
   function bootConfig() {
@@ -99,13 +95,12 @@
     if (n == null || isNaN(n)) return "n/a";
     var d = digits == null ? 2 : digits;
     var v = Number(n);
-    var sign = v > 0 ? "+" : v < 0 ? "" : "";
-    return sign + v.toFixed(d) + "%";
+    return (v > 0 ? "+" : "") + v.toFixed(d) + "%";
   }
 
   function fmtMult(n) {
     if (n == null || isNaN(n)) return "—";
-    return Number(n).toFixed(2) + "×";
+    return Number(n).toFixed(2) + "x";
   }
 
   function fmtAge(min) {
@@ -117,21 +112,36 @@
     return Math.floor(h / 24) + "d old";
   }
 
-  function fmtTime(iso) {
-    if (!iso) return "";
+  function toDate(iso) {
+    if (!iso) return null;
     var d = new Date(iso);
-    if (isNaN(d.getTime())) return "";
-    return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Europe/Berlin" });
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function fmtTime(iso) {
+    var d = toDate(iso);
+    if (!d) return "";
+    return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: TZ });
+  }
+
+  function fmtTimeZ(iso) {
+    var d = toDate(iso);
+    if (!d) return "";
+    return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: TZ, timeZoneName: "short" });
   }
 
   function fmtTimeFull(iso) {
-    if (!iso) return "";
-    var d = new Date(iso);
-    if (isNaN(d.getTime())) return "";
-    return d.toLocaleString("en-GB", {
-      day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
-      hour12: false, timeZone: "Europe/Berlin"
-    });
+    var d = toDate(iso);
+    if (!d) return "";
+    return d.toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: TZ });
+  }
+
+  function fmtWhen(iso) {
+    var d = toDate(iso);
+    if (!d) return "";
+    var today = new Date().toLocaleDateString("en-GB", { timeZone: TZ });
+    var day = d.toLocaleDateString("en-GB", { timeZone: TZ });
+    return day === today ? fmtTime(iso) : fmtTimeFull(iso);
   }
 
   function shortUsd(n) {
@@ -145,49 +155,60 @@
 
   function classifyVal(text) {
     if (text == null) return "";
-    var t = String(text);
-    if (/^[+\u25b2]/.test(t) || /\$\d/.test(t) && !t.startsWith("-")) {
-      if (t.startsWith("+") || t.startsWith("▲")) return "up";
-    }
-    if (t.startsWith("-") || t.startsWith("▼") || t.indexOf("-$") !== -1) return "down";
-    if (/skipped/i.test(t)) return "skip";
+    var t = String(text).trim();
+    if (/^skipped/i.test(t)) return "skip";
+    if (t.charAt(0) === "+" || t.charAt(0) === "▲") return "up";
+    if (t.charAt(0) === "-" || t.charAt(0) === "▼" || t.indexOf("-$") === 0) return "down";
     return "";
   }
 
+  function isIso(s) { return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(String(s || "")); }
+
   function reduced() { return REDUCE; }
+
+  function lsGet(k, d) { try { var v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, String(v)); } catch (e) {} }
 
   /* ---------- data store ---------- */
 
   var state = {
-    boot: true,
-    ready: false,
-    offline: false,
-    retryIn: 0,
-    lastOk: null,
-    lastError: null,
-    range: "LIVE",
-    tab: "home",
-    screen: "home", /* home|agents|activity|account|coin|audit|search|notifs */
-    mint: null,
-    query: "",
-    data: {
-      state: null,
-      charts: {},
-      activity: null,
-      account: null,
-      settings: null,
-      decisions: {},
-      coins: {},
-      audits: {}
-    }
+    boot: true, ready: false, offline: false, retryIn: 0, lastOk: null, lastError: null,
+    range: "LIVE", tab: "home", screen: "home", mint: null, query: "",
+    data: { state: null, charts: {}, activity: null, account: null, settings: null, recap: null, decisions: {}, coins: {}, audits: {} }
   };
 
   function mode() {
     var s = state.data.state;
-    return (s && s.mode) || (state.data.account && state.data.account.mode) || "PAPER";
+    return String((s && s.mode) || (state.data.account && state.data.account.mode) || "PAPER").toUpperCase();
   }
 
-  function isPaper() { return String(mode()).toUpperCase() !== "LIVE"; }
+  function isPaper() { return mode() !== "LIVE"; }
+
+  function deskFresh() {
+    var s = state.data.state;
+    var d = s && toDate(s.ts);
+    if (!d || state.offline) return false;
+    return (Date.now() - d.getTime()) < STALE_MS;
+  }
+
+  function agentAlive(a) {
+    if (!a || a.status !== "running") return false;
+    var d = toDate(a.heartbeat);
+    return !!d && (Date.now() - d.getTime()) < STALE_MS && !state.offline;
+  }
+
+  function startStack() {
+    var acc = state.data.account || {};
+    if (acc.stack != null && !isNaN(acc.stack)) return Number(acc.stack);
+    var st = state.data.state || {};
+    if (st.multiplier && st.balance != null) return Number(st.balance) / Number(st.multiplier);
+    return null;
+  }
+
+  function openCount() {
+    var r = ((state.data.state && state.data.state.agents) || []).filter(function (a) { return a.name === "risk"; })[0];
+    return (r && r.open_positions) || 0;
+  }
 
   /* ---------- fetch ---------- */
 
@@ -223,9 +244,7 @@
 
   function pullDecisions() {
     return Promise.all(AGENTS.map(function (n) {
-      return getJson("agents/" + n + "/decisions.json").then(function (j) {
-        state.data.decisions[n] = j;
-      }).catch(function () {});
+      return getJson("agents/" + n + "/decisions.json").then(function (j) { state.data.decisions[n] = j; }).catch(function () {});
     }));
   }
 
@@ -248,10 +267,7 @@
       left -= 1;
       state.retryIn = left;
       paintBannerOnly();
-      if (left <= 0) {
-        clearInterval(retryTimer);
-        refresh();
-      }
+      if (left <= 0) { clearInterval(retryTimer); refresh(); }
     }, 1000);
     paint();
   }
@@ -264,18 +280,130 @@
       return Promise.all(extra);
     }).then(function () {
       state.boot = false;
+      detectEvents();
       paint();
     }).catch(function (err) {
       state.offline = true;
       state.lastError = String((err && err.message) || err);
       state.boot = false;
-      if (state.ready) {
-        scheduleRetry();
-      } else {
-        paint();
-        scheduleRetry();
-      }
+      if (!state.ready) paint();
+      scheduleRetry();
     });
+  }
+
+  /* ---------- events: toasts + confetti (real data only) ---------- */
+
+  function detectEvents() {
+    var rows = (state.data.activity && state.data.activity.rows) || [];
+    var maxId = 0;
+    rows.forEach(function (r) { if ((r.id || 0) > maxId) maxId = r.id; });
+    var lastToast = Number(lsGet(TOAST_KEY, "-1"));
+    if (lastToast < 0) {
+      lsSet(TOAST_KEY, maxId); /* first run: baseline, no backlog toasts */
+    } else if (maxId > lastToast) {
+      rows.filter(function (r) {
+        return r.id > lastToast && /^(bought|sold|stopped)$/i.test(r.kind || "");
+      }).sort(function (a, b) { return a.id - b.id; }).slice(-3).forEach(function (r, i) {
+        setTimeout(function () { toastRow(r); }, i * 1400);
+      });
+      lsSet(TOAST_KEY, maxId);
+    }
+
+    var st = state.data.state || {};
+    var bal = Number(st.balance);
+    var start = startStack();
+    if (!isNaN(bal)) {
+      var athRaw = lsGet(ATH_KEY, "");
+      if (athRaw === "") lsSet(ATH_KEY, bal);
+      else if (bal > Number(athRaw) + 0.005) {
+        lsSet(ATH_KEY, bal);
+        if (start != null && bal > start) {
+          confetti();
+          toast({ kind: "ath", title: "New all-time high", sub: fmtUsd(bal) + " · " + fmtMult(st.multiplier), val: "" });
+        }
+      }
+    }
+    var miles = ((state.data.recap && state.data.recap.milestones_hit) || []).map(function (m) {
+      return String(m && m.multiple != null ? m.multiple : m);
+    });
+    var seenRaw = lsGet(MILES_KEY, "");
+    var seen = seenRaw ? seenRaw.split(",") : null;
+    if (seen === null) lsSet(MILES_KEY, miles.join(","));
+    else {
+      var fresh = miles.filter(function (m) { return seen.indexOf(m) === -1; });
+      if (fresh.length) {
+        confetti();
+        toast({ kind: "mile", title: "Milestone " + fresh[fresh.length - 1] + "x", sub: "Stack hit " + fresh[fresh.length - 1] + "x the start", val: "" });
+        lsSet(MILES_KEY, miles.join(","));
+      }
+    }
+  }
+
+  var toastHost = null;
+  function ensureToastHost() {
+    if (!toastHost) {
+      toastHost = document.createElement("div");
+      toastHost.className = "toasts";
+      document.body.appendChild(toastHost);
+    }
+    return toastHost;
+  }
+
+  function toastRow(r) {
+    var parts = String(r.value || "").split(" · ");
+    var sub = r.subtitle && !isIso(r.subtitle) ? r.subtitle : (r.agent ? AGENT_TITLE[r.agent] || r.agent : "");
+    toast({ kind: (r.kind || "").toLowerCase(), title: r.title || "", sub: [sub].concat(parts.slice(1)).filter(Boolean).join(" · "), val: parts[0] || "" });
+  }
+
+  function toast(t) {
+    var host = ensureToastHost();
+    var el = document.createElement("div");
+    var vc = classifyVal(t.val);
+    el.className = "toast-card k-" + esc(t.kind || "info");
+    el.innerHTML = '<img class="toast-ic" src="icons/icon-192.png" alt="">' +
+      '<div class="toast-txt"><div class="toast-t">' + esc(t.title) + "</div>" +
+      (t.sub ? '<div class="toast-s">' + esc(t.sub) + "</div>" : "") + "</div>" +
+      '<div class="toast-r"><span class="toast-now">now</span>' +
+      (t.val ? '<span class="toast-v ' + vc + '">' + esc(t.val) + "</span>" : "") + "</div>";
+    host.appendChild(el);
+    requestAnimationFrame(function () { requestAnimationFrame(function () { el.classList.add("in"); }); });
+    el.addEventListener("click", function () { el.classList.remove("in"); });
+    setTimeout(function () {
+      el.classList.remove("in");
+      setTimeout(function () { el.remove(); }, 450);
+    }, 4200);
+  }
+
+  function confetti() {
+    if (reduced()) return;
+    var cv = document.createElement("canvas");
+    cv.className = "confetti";
+    document.body.appendChild(cv);
+    var dpr = window.devicePixelRatio || 1;
+    var W = window.innerWidth, H = window.innerHeight;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var ctx = cv.getContext("2d");
+    ctx.scale(dpr, dpr);
+    var cols = [C.green, C.blue, "#fff", C.amber, C.red, "#A78BFA"];
+    var ps = [];
+    for (var i = 0; i < 140; i++) {
+      var ang = -Math.PI / 2 + (Math.random() - 0.5) * 1.6;
+      var sp = 7 + Math.random() * 9;
+      ps.push({ x: W / 2, y: H * 0.32, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, r: Math.random() * 6.28,
+        vr: (Math.random() - 0.5) * 0.4, w: 5 + Math.random() * 5, h: 8 + Math.random() * 6, c: cols[i % cols.length] });
+    }
+    var t0 = performance.now();
+    (function frame(now) {
+      var el = now - t0;
+      ctx.clearRect(0, 0, W, H);
+      ps.forEach(function (p) {
+        p.vy += 0.28; p.vx *= 0.985; p.x += p.vx; p.y += p.vy; p.r += p.vr;
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.r);
+        ctx.globalAlpha = Math.max(0, 1 - el / 2600);
+        ctx.fillStyle = p.c; ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); ctx.restore();
+      });
+      if (el < 2600) requestAnimationFrame(frame); else cv.remove();
+    })(t0);
   }
 
   /* ---------- navigation ---------- */
@@ -283,32 +411,24 @@
   function go(screen, opt) {
     opt = opt || {};
     state.screen = screen;
-    if (screen === "home" || screen === "agents" || screen === "activity" || screen === "account") {
-      state.tab = screen;
-    }
+    if (screen === "home" || screen === "agents" || screen === "activity" || screen === "account") state.tab = screen;
     if (opt.mint) state.mint = opt.mint;
     if (screen === "activity") markActivitySeen();
-    paint();
-    if (opt.mint) pullMint(opt.mint).then(paint);
+    paint(true);
+    if (opt.mint) pullMint(opt.mint).then(function () { paint(); });
   }
 
   function openRow(row) {
     if (!row || !row.mint) return;
     var agent = (row.agent || "").toLowerCase();
     var kind = (row.kind || "").toLowerCase();
-    if (agent === "auditor" || (kind === "rejected" && agent !== "analyst")) {
-      go("audit", { mint: row.mint });
-    } else if (agent === "analyst" && kind === "rejected") {
-      go("audit", { mint: row.mint });
-    } else {
-      go("coin", { mint: row.mint });
-    }
+    if (agent === "auditor" || agent === "analyst" || kind === "rejected") go("audit", { mint: row.mint });
+    else go("coin", { mint: row.mint });
   }
 
   function unreadCount() {
     var rows = (state.data.activity && state.data.activity.rows) || [];
-    var seen = 0;
-    try { seen = Number(localStorage.getItem(SEEN_KEY) || 0); } catch (e) {}
+    var seen = Number(lsGet(SEEN_KEY, 0));
     var n = 0;
     for (var i = 0; i < rows.length; i++) if ((rows[i].id || 0) > seen) n++;
     return n;
@@ -318,76 +438,86 @@
     var rows = (state.data.activity && state.data.activity.rows) || [];
     var max = 0;
     for (var i = 0; i < rows.length; i++) if (rows[i].id > max) max = rows[i].id;
-    try { localStorage.setItem(SEEN_KEY, String(max)); } catch (e) {}
+    lsSet(SEEN_KEY, max);
   }
 
-  /* ---------- icons (inline svg) ---------- */
+  /* ---------- icons ---------- */
 
   function ico(name) {
-    var s = 'xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"';
+    var s = 'xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"';
     if (name === "home") return '<svg ' + s + '><path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg>';
-    if (name === "agents") return '<svg ' + s + '><circle cx="7" cy="8" r="2.4"/><circle cx="17" cy="8" r="2.4"/><circle cx="12" cy="16" r="2.4"/><path d="M4.2 19c.6-2 2.1-3.2 3.8-3.2M16 15.8c1.7 0 3.2 1.2 3.8 3.2M12 11.2c1.7 0 3.1 1 3.7 2.6"/></svg>';
+    if (name === "agents") return '<svg ' + s + '><rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01M3 13v2M21 13v2"/></svg>';
     if (name === "activity") return '<svg ' + s + '><path d="M4 12h3.2l2.1-6 3.4 12 2.2-6H20"/></svg>';
     if (name === "account") return '<svg ' + s + '><circle cx="12" cy="9" r="3"/><path d="M6 19c.8-2.8 3-4.2 6-4.2s5.2 1.4 6 4.2"/></svg>';
     if (name === "search") return '<svg ' + s + '><circle cx="11" cy="11" r="6"/><path d="M16 16.5 20 20.5"/></svg>';
-    if (name === "bell") return '<svg ' + s + '><path d="M6.5 16h11v-5.2a5.5 5.5 0 0 0-11 0z"/><path d="M10 16v.8a2 2 0 0 0 4 0V16"/><path d="M12 4.5v1.3"/></svg>';
+    if (name === "bell") return '<svg ' + s + '><path d="M6.5 16h11v-5.2a5.5 5.5 0 0 0-11 0z"/><path d="M10 16v.8a2 2 0 0 0 4 0V16"/></svg>';
     if (name === "back") return '<svg ' + s + '><path d="M15 5 8 12l7 7"/></svg>';
+    if (name === "buy") return '<svg ' + s + '><path d="M12 19V5M6 11l6-6 6 6"/></svg>';
+    if (name === "sell") return '<svg ' + s + '><path d="M12 5v14M6 13l6 6 6-6"/></svg>';
+    if (name === "stop") return '<svg ' + s + '><path d="M7 7l10 10M17 7 7 17"/></svg>';
+    if (name === "skip") return '<svg ' + s + '><path d="M5 12h14"/></svg>';
     return "";
   }
 
-  /* ---------- odometer ---------- */
+  /* ---------- balance count-up ---------- */
 
-  var lastOdo = null;
+  var balShown = null;
+  var balAnim = 0;
 
-  function renderOdometer(value) {
-    var text = fmtUsd(value, 2);
-    var html = '<div class="odometer" aria-label="' + esc(text) + '">';
-    var prev = lastOdo || text;
-    if (prev.length !== text.length) prev = text;
-    for (var i = 0; i < text.length; i++) {
-      var ch = text[i];
-      if (/\d/.test(ch)) {
-        var from = /\d/.test(prev[i]) ? Number(prev[i]) : Number(ch);
-        var to = Number(ch);
-        var delay = reduced() ? 0 : (text.length - 1 - i) * 30;
-        var fromY = from * -0.95;
-        var toY = to * -0.95;
-        html += '<span class="odo-col"><span class="odo-reel' + (reduced() ? "" : " roll") + '" data-to="' + toY + 'em" data-delay="' + delay + '" style="transform:translateY(' + fromY + 'em)">';
-        for (var d = 0; d <= 9; d++) html += '<span class="d">' + d + "</span>";
-        html += "</span></span>";
-      } else {
-        html += '<span class="sym">' + esc(ch) + "</span>";
-      }
+  function animateBalance(target) {
+    var el = document.getElementById("bal-num");
+    if (!el || target == null || isNaN(target)) return;
+    target = Number(target);
+    if (balShown == null || reduced() || Math.abs(balShown - target) < 0.005) {
+      balShown = target;
+      el.textContent = fmtUsd(target);
+      return;
     }
-    html += "</div>";
-    lastOdo = text;
-    return html;
+    var from = balShown, t0 = performance.now(), dur = 900;
+    cancelAnimationFrame(balAnim);
+    var up = target > from;
+    el.classList.remove("tick-up", "tick-down");
+    void el.offsetWidth;
+    el.classList.add(up ? "tick-up" : "tick-down");
+    (function step(now) {
+      var u = Math.min(1, (now - t0) / dur);
+      var v = from + (target - from) * (1 - Math.pow(1 - u, 3));
+      var cur = document.getElementById("bal-num");
+      if (cur) cur.textContent = fmtUsd(v);
+      balShown = v;
+      if (u < 1) balAnim = requestAnimationFrame(step); else balShown = target;
+    })(t0);
   }
 
-  function kickOdometer(root) {
-    if (!root) return;
-    var reels = root.querySelectorAll(".odo-reel.roll");
-    reels.forEach(function (el) {
-      var to = el.getAttribute("data-to");
-      var delay = Number(el.getAttribute("data-delay") || 0);
-      requestAnimationFrame(function () {
-        setTimeout(function () { el.style.transform = "translateY(" + to + ")"; }, delay);
-      });
-    });
-  }
+  /* ---------- canvas: equity chart ---------- */
 
-  /* ---------- canvas: line chart ---------- */
+  var chartIntro = { range: null, start: 0 };
 
-  var chartAnim = { range: null, from: null, to: null, start: 0, marksOn: 0 };
-
-  function lerp(a, b, t) { return a + (b - a) * t; }
   function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
 
-  function drawLineChart(canvas, chart, animate) {
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function markStyle(m) {
+    var k = String(m.kind || "").toLowerCase();
+    if (k === "bought") return { col: C.blue, text: "Buy" + (m.value != null ? " " + fmtUsd(m.value) : "") };
+    if (k === "stopped") return { col: C.red, text: m.label || "Stop" };
+    var v = Number(m.value);
+    return { col: v < 0 ? C.red : C.green, text: m.label || "Sell" };
+  }
+
+  function drawLineChart(canvas, chart) {
     if (!canvas || !chart) return;
     var dpr = window.devicePixelRatio || 1;
     var cssW = canvas.clientWidth || 390;
-    var cssH = canvas.clientHeight || 196;
+    var cssH = canvas.clientHeight || 210;
     if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
       canvas.width = Math.round(cssW * dpr);
       canvas.height = Math.round(cssH * dpr);
@@ -396,153 +526,132 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
 
-    var pts = (chart.points || []).slice();
-    var padL = 16, padR = 16, padT = 28, padB = 16;
-    var w = cssW - padL - padR, h = cssH - padT - padB;
-    var startVal = chart.start_value != null ? Number(chart.start_value) : (pts[0] ? Number(pts[0].v) : 0);
+    var pts = (chart.points || []).map(function (p) { return { t: toDate(p.t), v: Number(p.v) }; })
+      .filter(function (p) { return p.t && !isNaN(p.v); });
     var marks = chart.marks || [];
-    var empty = marks.length === 0;
+    var startVal = chart.start_value != null ? Number(chart.start_value) : (pts[0] ? pts[0].v : 0);
+    var padL = 12, padR = 14, padT = 34, padB = 14;
+    var w = cssW - padL - padR, h = cssH - padT - padB;
 
-    var vals = pts.map(function (p) { return Number(p.v); });
-    vals.push(startVal);
-    var min = Math.min.apply(null, vals);
-    var max = Math.max.apply(null, vals);
-    if (min === max) { min -= 1; max += 1; }
-    var span = max - min;
+    var vals = pts.map(function (p) { return p.v; }).concat([startVal]);
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    if (max - min < Math.max(0.02, Math.abs(max) * 0.004)) { var mid = (max + min) / 2, pad = Math.max(0.5, Math.abs(mid) * 0.04); min = mid - pad; max = mid + pad; }
+    else { var sp = max - min; min -= sp * 0.08; max += sp * 0.12; }
+    function yAt(v) { return padT + (1 - (v - min) / (max - min)) * h; }
 
-    function xAt(i, n) {
-      if (n <= 1) return padL + w / 2;
-      return padL + (i / (n - 1)) * w;
+    var tMin = pts.length ? pts[0].t.getTime() : Date.now();
+    var tMax = pts.length ? pts[pts.length - 1].t.getTime() : Date.now();
+    marks.forEach(function (m) { var d = toDate(m.t); if (d) { tMin = Math.min(tMin, d.getTime()); tMax = Math.max(tMax, d.getTime()); } });
+    function xAt(t) { return tMax === tMin ? padL + w : padL + ((t - tMin) / (tMax - tMin)) * w; }
+
+    var last = pts.length ? pts[pts.length - 1].v : startVal;
+    var col = last < startVal - 0.0001 ? C.red : C.green;
+    var rgb = col === C.red ? "248,113,113" : "74,222,128";
+
+    /* intro sweep */
+    var prog = 1;
+    if (!reduced()) {
+      if (chartIntro.range !== chart.range) chartIntro = { range: chart.range, start: performance.now() };
+      prog = easeOut(Math.min(1, (performance.now() - chartIntro.start) / 700));
     }
-    function yAt(v) { return padT + (1 - (v - min) / span) * h; }
 
-    /* dashed start line */
+    /* baseline */
     var y0 = yAt(startVal);
     ctx.save();
-    ctx.strokeStyle = "rgba(235,235,245,0.3)";
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(padL, y0);
-    ctx.lineTo(padL + w, y0);
-    ctx.stroke();
+    ctx.strokeStyle = "rgba(255,255,255,0.14)";
+    ctx.setLineDash([3, 5]);
+    ctx.beginPath(); ctx.moveTo(padL, y0); ctx.lineTo(padL + w, y0); ctx.stroke();
     ctx.restore();
 
-    if (empty) {
-      /* no trades yet: dashed start line only; caption is HTML */
-      return;
-    }
+    var line = pts.length === 1 ? [{ x: padL, y: yAt(pts[0].v) }, { x: padL + w, y: yAt(pts[0].v) }]
+      : pts.map(function (p) { return { x: xAt(p.t.getTime()), y: yAt(p.v) }; });
+    if (!line.length) line = [{ x: padL, y: y0 }, { x: padL + w, y: y0 }];
 
-    /* slide last point */
-    var drawPts = pts.map(function (p) { return { t: p.t, v: Number(p.v) }; });
-    var tAnim = 1;
-    if (animate && !reduced() && chartAnim.to && chartAnim.range === chart.range) {
-      var u = Math.min(1, (performance.now() - chartAnim.start) / 250);
-      tAnim = easeOut(u);
-      if (chartAnim.from && chartAnim.from.length === drawPts.length - 1 && drawPts.length > 1) {
-        var last = drawPts[drawPts.length - 1];
-        var prev = drawPts[drawPts.length - 2];
-        last._xMix = tAnim;
-        last._from = prev;
-      }
-    }
-
-    function ptX(i, n, p) {
-      var x = xAt(i, n);
-      if (p && p._xMix != null) {
-        var x0 = xAt(i - 1, n);
-        return lerp(x0, x, p._xMix);
-      }
-      return x;
-    }
-
-    var n = drawPts.length;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, padL + w * prog + 2, cssH); ctx.clip();
+    /* fill */
     ctx.beginPath();
-    for (var i = 0; i < n; i++) {
-      var x = ptX(i, n, drawPts[i]);
-      var y = yAt(drawPts[i].v);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    var lastX = n ? ptX(n - 1, n, drawPts[n - 1]) : padL;
-    var lastY = n ? yAt(drawPts[n - 1].v) : y0;
-    ctx.lineTo(lastX, padT + h);
-    ctx.lineTo(padL, padT + h);
+    line.forEach(function (p, i) { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+    ctx.lineTo(line[line.length - 1].x, padT + h + padB);
+    ctx.lineTo(line[0].x, padT + h + padB);
     ctx.closePath();
-    var grad = ctx.createLinearGradient(0, padT, 0, padT + h);
-    grad.addColorStop(0, "rgba(0,211,90,0.28)");
-    grad.addColorStop(1, "rgba(0,211,90,0)");
-    ctx.fillStyle = grad;
-    ctx.fill();
-
+    var grad = ctx.createLinearGradient(0, padT, 0, cssH);
+    grad.addColorStop(0, "rgba(" + rgb + ",0.32)");
+    grad.addColorStop(0.6, "rgba(" + rgb + ",0.07)");
+    grad.addColorStop(1, "rgba(" + rgb + ",0)");
+    ctx.fillStyle = grad; ctx.fill();
+    /* glow line */
     ctx.beginPath();
-    for (var j = 0; j < n; j++) {
-      var xj = ptX(j, n, drawPts[j]);
-      var yj = yAt(drawPts[j].v);
-      if (j === 0) ctx.moveTo(xj, yj); else ctx.lineTo(xj, yj);
-    }
-    ctx.strokeStyle = "#00d35a";
-    ctx.lineWidth = 2;
-    ctx.lineJoin = "round";
-    ctx.lineCap = "round";
-    ctx.stroke();
+    line.forEach(function (p, i) { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.shadowColor = "rgba(" + rgb + ",0.9)"; ctx.shadowBlur = 12;
+    ctx.strokeStyle = col; ctx.lineWidth = 2.2; ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.restore();
 
-    /* marks, no overlap: later mark moves up a row */
-    var markAlpha = 1;
-    if (animate && !reduced() && chartAnim.marksOn) {
-      markAlpha = Math.min(1, (performance.now() - chartAnim.marksOn) / 200);
+    /* end dot */
+    if (prog >= 1) {
+      var e = line[line.length - 1];
+      var pulse = reduced() ? 0.5 : (Math.sin(performance.now() / 380) + 1) / 2;
+      ctx.beginPath(); ctx.arc(e.x, e.y, 7 + pulse * 4, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(" + rgb + "," + (0.18 - pulse * 0.1) + ")"; ctx.fill();
+      ctx.beginPath(); ctx.arc(e.x, e.y, 3.6, 0, Math.PI * 2);
+      ctx.shadowColor = col; ctx.shadowBlur = 10; ctx.fillStyle = col; ctx.fill(); ctx.shadowBlur = 0;
     }
-    var times = pts.map(function (p) { return new Date(p.t).getTime(); });
-    var t0 = times.length ? times[0] : 0;
-    var t1 = times.length ? times[times.length - 1] : 1;
+
+    /* marker pills, stacked so they do not overlap */
     var used = [];
-    var rowH = 16;
+    var font = "700 10.5px " + getComputedStyle(document.body).fontFamily;
     marks.forEach(function (m) {
-      var tm = new Date(m.t).getTime();
-      var mx;
-      if (t1 === t0) mx = padL + w / 2;
-      else mx = padL + ((tm - t0) / (t1 - t0)) * w;
-      mx = Math.max(padL + 8, Math.min(padL + w - 8, mx));
-      var my = yAt(pts.length ? nearestVal(pts, m.t) : startVal) - 12;
-      var row = 0;
-      var label = String(m.label || "");
-      ctx.save();
-      ctx.font = "600 11px " + getComputedStyle(document.body).fontFamily;
-      var tw = ctx.measureText(label).width;
-      var lx = Math.max(padL, Math.min(mx - tw / 2, padL + w - tw));
-      function hits(r) {
-        var top = my - 4 - r * rowH;
-        for (var k = 0; k < used.length; k++) {
-          var u = used[k];
-          if (Math.abs(u.y - top) < rowH - 1 && !(lx + tw < u.x || lx > u.x + u.w)) return true;
-        }
-        return false;
-      }
-      while (hits(row) && row < 6) row++;
-      var ty = my - 4 - row * rowH;
+      var d = toDate(m.t);
+      if (!d) return;
+      var ms = markStyle(m);
+      var mx = xAt(d.getTime());
+      var my = pts.length ? yAt(nearestVal(pts, d.getTime())) : y0;
+      ctx.font = font;
+      var tw = ctx.measureText(ms.text).width + 16, ph = 18;
+      var lx = Math.max(2, Math.min(mx - tw / 2, cssW - tw - 2));
+      var ty = Math.max(2, my - ph - 10);
+      var guard = 0;
+      while (guard++ < 6 && used.some(function (u) { return !(lx + tw < u.x || lx > u.x + u.w) && Math.abs(u.y - ty) < ph + 2; })) ty -= ph + 3;
+      ty = Math.max(2, ty);
       used.push({ x: lx, w: tw, y: ty });
-      ctx.globalAlpha = markAlpha;
-      ctx.fillStyle = m.color || "#0a84ff";
-      ctx.textBaseline = "bottom";
-      ctx.fillText(label, lx, ty);
-      ctx.restore();
+      ctx.globalAlpha = prog;
+      ctx.strokeStyle = ms.col; ctx.globalAlpha = prog * 0.5; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(mx, ty + ph); ctx.lineTo(mx, my); ctx.stroke();
+      ctx.globalAlpha = prog;
+      ctx.beginPath(); ctx.arc(mx, my, 3, 0, Math.PI * 2); ctx.fillStyle = ms.col; ctx.fill();
+      roundRect(ctx, lx, ty, tw, ph, 9);
+      ctx.shadowColor = ms.col; ctx.shadowBlur = 10;
+      ctx.fillStyle = ms.col; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.fillStyle = ms.col === C.blue ? "#fff" : "#04110a";
+      ctx.textBaseline = "middle"; ctx.textAlign = "center";
+      ctx.fillText(ms.text, lx + tw / 2, ty + ph / 2 + 0.5);
+      ctx.globalAlpha = 1; ctx.textAlign = "start";
     });
-
-    if (animate && !reduced()) {
-      var more = (performance.now() - chartAnim.start) < 260 || (chartAnim.marksOn && performance.now() - chartAnim.marksOn < 210);
-      if (more) requestAnimationFrame(function () { drawLineChart(canvas, chart, true); });
-    }
   }
 
-  function nearestVal(pts, t) {
-    var tm = new Date(t).getTime();
+  function nearestVal(pts, tm) {
     var best = pts[0].v, bd = Infinity;
     for (var i = 0; i < pts.length; i++) {
-      var d = Math.abs(new Date(pts[i].t).getTime() - tm);
+      var d = Math.abs(pts[i].t.getTime() - tm);
       if (d < bd) { bd = d; best = pts[i].v; }
     }
-    return Number(best);
+    return best;
   }
 
+  var chartLoop = 0;
+  function runChartLoop() {
+    cancelAnimationFrame(chartLoop);
+    if (reduced()) return;
+    var last = 0;
+    (function loop(now) {
+      var hc = document.getElementById("home-chart");
+      if (!hc || state.screen !== "home") return;
+      if (now - last > (now - chartIntro.start < 800 ? 30 : 110)) { drawLineChart(hc, state.data.charts[state.range]); last = now; }
+      chartLoop = requestAnimationFrame(loop);
+    })(performance.now());
+  }
   /* ---------- canvas: candles ---------- */
 
   function drawCandles(canvas, coin) {
@@ -560,7 +669,7 @@
     var h = cssH - padT - padB - volH - 6;
     var w = cssW - padL - padR;
     if (!bars.length) {
-      ctx.fillStyle = "rgba(235,235,245,0.6)";
+      ctx.fillStyle = "#8a8a8a";
       ctx.font = "13px " + getComputedStyle(document.body).fontFamily;
       ctx.textAlign = "center";
       ctx.fillText("Waiting for prices", cssW / 2, cssH / 2);
@@ -580,7 +689,7 @@
     bars.forEach(function (b, i) {
       var x = padL + i * gap + gap / 2;
       var up = b.c >= b.o;
-      ctx.strokeStyle = ctx.fillStyle = up ? "#00d35a" : "#ff453a";
+      ctx.strokeStyle = ctx.fillStyle = up ? "#4ADE80" : "#F87171";
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x, yAt(b.h));
@@ -595,7 +704,7 @@
     if (exit != null) {
       var ye = yAt(Number(exit));
       ctx.save();
-      ctx.strokeStyle = "#ff9f0a";
+      ctx.strokeStyle = "#FBBF24";
       ctx.lineWidth = 1.25;
       ctx.setLineDash([5, 4]);
       ctx.beginPath();
@@ -610,7 +719,7 @@
     bars.forEach(function (b, i) {
       var x = padL + i * gap + gap / 2;
       var vh = vmax ? (Math.abs(b.volume || 0) / vmax) * volH : 0;
-      ctx.fillStyle = (b.c >= b.o) ? "rgba(0,211,90,0.55)" : "rgba(255,69,58,0.55)";
+      ctx.fillStyle = (b.c >= b.o) ? "rgba(74,222,128,0.55)" : "rgba(248,113,113,0.55)";
       ctx.fillRect(x - bw / 2, base - vh, bw, vh);
     });
   }
@@ -630,7 +739,7 @@
     var cx = cssW / 2, cy = cssH / 2, r = Math.min(cssW, cssH) / 2 - 8;
     ctx.lineWidth = 8;
     ctx.lineCap = "round";
-    ctx.strokeStyle = "#2c2c2e";
+    ctx.strokeStyle = "#1f1f1f";
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.stroke();
@@ -643,8 +752,8 @@
       return;
     }
     var s = Math.max(0, Math.min(100, Number(score)));
-    var col = s >= (minScore || 70) ? "#00d35a" : "#ff9f0a";
-    if (s < 40) col = "#ff453a";
+    var col = s >= (minScore || 70) ? "#4ADE80" : "#FBBF24";
+    if (s < 40) col = "#F87171";
     ctx.strokeStyle = col;
     ctx.beginPath();
     ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + (s / 100) * Math.PI * 2, false);
@@ -718,9 +827,9 @@
       var failing = shown && ly.checked && ly.pass === false;
       ctx.beginPath();
       ctx.ellipse(cx, y, r, 11, 0, 0, Math.PI * 2);
-      if (passing) ctx.fillStyle = "rgba(0,211,90,0.85)";
-      else if (failing) ctx.fillStyle = "rgba(255,69,58,0.85)";
-      else ctx.fillStyle = "#2c2c2e";
+      if (passing) ctx.fillStyle = "rgba(74,222,128,0.85)";
+      else if (failing) ctx.fillStyle = "rgba(248,113,113,0.85)";
+      else ctx.fillStyle = "#1f1f1f";
       ctx.fill();
       ctx.strokeStyle = "rgba(255,255,255,0.08)";
       ctx.lineWidth = 1;
@@ -750,7 +859,7 @@
         yb = top + beam.layer * gap;
       }
       ctx.save();
-      ctx.strokeStyle = "#64d2ff";
+      ctx.strokeStyle = "#67E8F9";
       ctx.lineWidth = 2;
       ctx.globalAlpha = 0.95;
       ctx.beginPath();
@@ -764,27 +873,45 @@
     }
   }
 
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
   /* ---------- chrome ---------- */
 
-  function paperBadge() {
-    return isPaper() ? '<span class="badge-paper">PAPER</span>' : "";
+  function statusPill() {
+    var st = state.data.state || {};
+    var fresh = deskFresh();
+    var cls, label;
+    if (state.offline) { cls = "off"; label = "Offline"; }
+    else if (!fresh) { cls = "stale"; label = "Offline"; }
+    else if (isPaper()) { cls = "live"; label = "PAPER"; }
+    else { cls = "real"; label = "LIVE"; }
+    var when = st.ts ? fmtTimeZ(st.ts) : "";
+    return '<div class="status"><span class="st-pill ' + cls + '"><i></i>' + label + "</span>" +
+      '<span class="st-time">' + esc(when ? "updated " + when : "waiting") + "</span></div>";
   }
 
-  function navbarHome() {
-    return '<header class="navbar">' +
-      '<button class="nav-btn" data-go="account" aria-label="Account"><span class="avatar">G</span></button>' +
-      '<div class="title">Grok Bot <span class="chev">›</span></div>' +
-      '<button class="nav-btn" data-go="search" aria-label="Search">' + ico("search") + "</button>" +
-      '<button class="nav-btn" data-go="notifs" aria-label="Notifications">' + ico("bell") +
-        '<span class="bell-dot' + (unreadCount() ? " on" : "") + '"></span></button>' +
+  function header() {
+    var n = openCount();
+    return '<header class="hdr">' +
+      '<button class="hdr-id" data-go="account" aria-label="Account"><img class="app-ic" src="icons/icon-192.png" alt=""></button>' +
+      '<div class="hdr-title"><div class="hdr-name">FOMO Desk</div>' +
+      '<div class="hdr-sub">⚡ fomo • ' + n + " open</div></div>" +
+      '<button class="ic-btn" data-go="search" aria-label="Search">' + ico("search") + "</button>" +
+      '<button class="ic-btn" data-go="notifs" aria-label="Notifications">' + ico("bell") +
+      '<span class="bell-dot' + (unreadCount() ? " on" : "") + '"></span></button>' +
+      '<div id="hdr-status">' + statusPill() + "</div>" +
       "</header>";
   }
 
   function navbarPush(title, extra) {
-    return '<header class="navbar">' +
-      '<button class="nav-btn" data-act="back" aria-label="Back">' + ico("back") + "</button>" +
-      '<div class="title">' + esc(title) + (extra || "") + "</div>" +
+    return '<header class="hdr push-hdr">' +
+      '<button class="ic-btn" data-act="back" aria-label="Back">' + ico("back") + "</button>" +
+      '<div class="hdr-title"><div class="hdr-name">' + esc(title) + (extra || "") + "</div></div>" +
       "</header>";
+  }
+
+  function paperBadge() {
+    return isPaper() ? '<span class="badge-paper">PAPER</span>' : "";
   }
 
   function bannerHtml() {
@@ -795,40 +922,30 @@
   }
 
   function tabbar() {
-    var tabs = [
-      ["home", "Home", "home"],
-      ["agents", "Agents", "agents"],
-      ["activity", "Activity", "activity"],
-      ["account", "Account", "account"]
-    ];
+    var tabs = [["home", "Home"], ["agents", "Agents"], ["activity", "Activity"], ["account", "Account"]];
     var hide = state.screen === "coin" || state.screen === "audit" || state.screen === "search" || state.screen === "notifs";
     if (hide) return "";
     return '<nav class="tabbar">' + tabs.map(function (t) {
       return '<button data-go="' + t[0] + '" class="' + (state.tab === t[0] ? "on" : "") + '">' +
-        ico(t[2]) + "<span>" + t[1] + "</span></button>";
+        ico(t[0]) + "<span>" + t[1] + "</span></button>";
     }).join("") + "</nav>";
   }
 
-  /* ---------- skeletons / lock ---------- */
-
   function skeletonHome() {
-    return navbarHome() +
-      '<div class="screen with-tabs">' +
+    return header() + '<div class="screen with-tabs">' +
       '<div class="skl skl-balance"></div><div class="skl skl-meta"></div>' +
       '<div class="skl skl-chart"></div><div class="skl skl-ranges"></div>' +
-      '<div class="skl skl-card"></div>' +
-      '<div class="skl skl-row"></div><div class="skl skl-row"></div><div class="skl skl-row"></div>' +
+      '<div class="skl skl-card"></div><div class="skl skl-card"></div>' +
       "</div>" + tabbar();
   }
 
   function lockScreen() {
-    return '<div class="lock"><h1>Grok Bot</h1><p>Open the link from Telegram</p>' +
-      '<p style="margin-top:20px">Or copy the desk link from Telegram and paste it here</p>' +
-      '<input id="lock-link" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste desk link" ' +
-      'style="margin-top:12px;width:280px;max-width:80vw;height:44px;border-radius:12px;border:1px solid #38383a;background:#1c1c1e;color:#fff;padding:0 12px;font-size:16px">' +
-      '<button type="button" onclick="window.__deskConnect()" ' +
-      'style="margin-top:12px;width:280px;max-width:80vw;height:44px;border-radius:12px;border:0;background:#0a84ff;color:#fff;font-size:17px;font-weight:600">Connect</button>' +
-      '<p id="lock-msg" style="margin-top:10px;color:#ff453a;font-size:14px"></p></div>';
+    return '<div class="lock"><img class="lock-ic" src="icons/icon-192.png" alt="">' +
+      "<h1>FOMO Desk</h1><p>Open the link from Telegram</p>" +
+      '<p class="lock-or">Or copy the desk link from Telegram and paste it here</p>' +
+      '<input id="lock-link" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste desk link">' +
+      '<button type="button" class="lock-btn" onclick="window.__deskConnect()">Connect</button>' +
+      '<p id="lock-msg"></p></div>';
   }
 
   window.__deskConnect = function () {
@@ -847,31 +964,73 @@
     location.replace(location.pathname + location.search);
   };
 
-  /* ---------- agent card body ---------- */
+  /* ---------- agents ---------- */
 
-  function statusDot(st) {
-    var s = st || "down";
-    return '<span class="dot ' + esc(s) + '"></span>';
+  function agentSummary(a) {
+    var n = a.name, sub = "", metric = "", mcls = "";
+    if (n === "scanner") {
+      var f = (a.feed || [])[0];
+      sub = f ? (f.name || "") + (f.verdict === "pass" ? " → Auditor" : " · " + (f.reason || "killed")) : "Listening for new pools";
+      metric = Number(a.count || 0).toLocaleString("en-US") + " pools";
+      if (a.passed) { metric += " · " + a.passed + " ✓"; }
+    } else if (n === "auditor") {
+      var ly = (a.last && a.last.layers) || [];
+      var bad = ly.filter(function (x) { return x.pass === false && x.value !== "not checked"; })[0];
+      sub = a.last ? (bad ? "Rejected · " + bad.value : "8/8 passed → Executor") : "Waiting for a coin to take apart";
+      metric = (a.count || 0) + " audited";
+    } else if (n === "analyst") {
+      sub = "Min score " + (a.min_score != null ? a.min_score : "—") + (a.mode ? " · " + a.mode : "");
+      metric = a.score == null ? "no score" : "score " + a.score;
+      mcls = a.score != null && a.score >= (a.min_score || 70) ? "g" : "";
+    } else if (n === "executor") {
+      sub = a.last_size_usd != null ? "Last " + fmtUsd(a.last_size_usd) + " · " + a.stack_pct + "% of stack" : "Waiting for a signal · " + a.stack_pct + "% sizing";
+      metric = (a.count || 0) + " trades";
+    } else if (n === "risk") {
+      sub = (a.headline || "Guarding") + " · stop −" + a.stop_pct + "% · trail " + a.trail_pct + "%";
+      metric = (a.open_positions || 0) + " open";
+      mcls = a.open_positions ? "g" : "";
+    } else {
+      sub = a.headline || "";
+      metric = a.count != null ? String(a.count) : "";
+    }
+    return { sub: sub, metric: metric, mcls: mcls };
   }
 
-  function agentCardInner(a, full) {
-    var name = a.name;
-    var html = '<div class="ac-top"><div class="ac-name">' + statusDot(a.status) + esc(AGENT_TITLE[name] || name) + "</div>";
-    if (full) {
-      html += '<span class="muted">' + esc(a.status || "") + "</span>";
-    }
+  function agentRow(a) {
+    var s = agentSummary(a);
+    var alive = agentAlive(a);
+    var stCls = alive ? "on" : (a.status === "paused" ? "paused" : "down");
+    return '<button class="ag-row" data-go-agent="' + esc(a.name) + '">' +
+      '<span class="ag-ic">' + (AGENT_EMOJI[a.name] || "🤖") + '<i class="ag-dot ' + stCls + '"></i></span>' +
+      '<span class="ag-mid"><span class="ag-name">' + esc(AGENT_TITLE[a.name] || a.name) + "</span>" +
+      '<span class="ag-sub">' + esc(s.sub) + "</span></span>" +
+      '<span class="ag-metric ' + s.mcls + '">' + esc(s.metric) + "</span></button>";
+  }
+
+  function agentsCard(agents) {
+    var running = agents.filter(agentAlive).length;
+    var html = '<div class="sec-h"><h2>Agents</h2><span class="sec-r ' + (running ? "g" : "") + '">' + running + " running</span></div>";
+    html += '<div class="card list-card">';
+    if (!agents.length) html += '<div class="empty">No agents reported yet</div>';
+    agents.forEach(function (a) { html += agentRow(a); });
     html += "</div>";
-    html += '<div class="ac-head">' + esc(a.headline || "") + "</div>";
-    html += '<div class="ac-body">';
+    return html;
+  }
+
+  function agentDetail(a) {
+    var name = a.name;
+    var html = "";
     if (name === "scanner") {
       var feed = a.feed || [];
-      if (!feed.length) html += '<div class="muted">Listening for graduations</div>';
+      html += '<div class="kpis"><span><b>' + (a.count || 0) + "</b> pools</span><span><b class=\"g\">" + (a.passed || 0) +
+        "</b> passed</span><span><b class=\"r\">" + (a.killed || 0) + "</b> killed</span></div>";
+      if (!feed.length) html += '<div class="muted">Listening for new pools</div>';
       else {
         html += '<ul class="feed">';
-        feed.slice(0, full ? 12 : 7).forEach(function (f) {
+        feed.slice(0, 12).forEach(function (f) {
           var kill = f.verdict !== "pass";
           html += '<li class="' + (kill ? "kill" : "pass") + '" data-coin="' + esc(f.mint) + '">' +
-            '<span class="nm">' + esc(f.name || f.title || "") + "</span>" +
+            '<span class="nm">' + esc(f.name || f.title || "") + (f.source ? ' <em>' + esc(f.source) + "</em>" : "") + "</span>" +
             '<span class="why">' + esc(kill ? (f.reason || "") : "→ auditor") + "</span></li>";
         });
         html += "</ul>";
@@ -884,159 +1043,228 @@
         for (var i = 1; i <= 8; i++) {
           var ly = layers.filter(function (x) { return x.n === i; })[0];
           var cls = !ly || ly.value === "not checked" || ly.pass == null ? "wait" : (ly.pass ? "ok" : "bad");
-          var mark = cls === "ok" ? "✓" : cls === "bad" ? "✕" : "";
-          html += '<div class="layer-strip ' + cls + '"><span class="mark">' + mark + "</span>" +
+          html += '<div class="layer-strip ' + cls + '"><span class="mark">' + (cls === "ok" ? "✓" : cls === "bad" ? "✕" : "") + "</span>" +
             esc((ly && ly.name) || ("Layer " + i)) + "</div>";
         }
         html += "</div>";
-        if (a.last) {
-          var allOk = layers.length === 8 && layers.every(function (x) { return x.pass && x.value !== "not checked"; });
-          var reason = (layers.filter(function (x) { return x.pass === false && x.value !== "not checked"; })[0] || {}).value;
-          html += '<div class="muted" style="margin-top:8px">' +
-            (allOk ? "8/8 → Executor" : esc(reason || "taking apart...")) +
-            (a.rejected ? " · " + a.rejected + " rejected" : "") + "</div>";
-        } else html += '<div class="muted">taking apart...</div>';
+        if (a.rejected) html += '<div class="muted" style="margin-top:8px">' + a.rejected + " rejected tonight</div>";
       }
     } else if (name === "analyst") {
-      html += '<div class="score-row"><canvas class="score-ring" data-score="' +
-        (a.score == null ? "" : a.score) + '" data-min="' + (a.min_score || 70) + '"></canvas>' +
-        '<div><div class="muted">min ' + esc(String(a.min_score || 70)) +
-        (a.mode ? " · " + esc(a.mode) : "") + "</div></div></div>";
+      html += '<div class="score-row"><canvas class="score-ring" data-score="' + (a.score == null ? "" : a.score) +
+        '" data-min="' + (a.min_score || 70) + '"></canvas><div><div class="big-sub">Last score</div><div class="muted">min ' +
+        esc(String(a.min_score || 70)) + (a.mode ? " · " + esc(a.mode) : "") + "</div></div></div>";
     } else if (name === "executor") {
       var sz = a.last_size_usd;
-      html += '<div class="exec-line">' +
-        (sz != null ? esc(fmtUsd(sz)) + " · " + esc(String(a.stack_pct)) + "% of stack" : "No fills yet") +
-        "</div>";
-      if (sz != null) html += '<div class="exec-ok">✓ Filled</div>';
+      html += '<div class="exec-line">' + (sz != null ? esc(fmtUsd(sz)) + " · " + esc(String(a.stack_pct)) + "% of stack" : "No fills yet") + "</div>";
+      if (sz != null) html += '<div class="exec-ok">✓ Filled (paper)</div>';
     } else if (name === "risk") {
-      html += '<div>' + esc(a.headline || "Guarding") + "</div>";
-      html += '<div class="pills">' +
-        '<span class="pill red">stop −' + esc(String(a.stop_pct)) + "%</span>" +
-        '<span class="pill green">trail ' + esc(String(a.trail_pct)) + "%</span></div>";
+      html += '<div class="pills"><span class="pill red">stop −' + esc(String(a.stop_pct)) + '%</span><span class="pill green">trail ' +
+        esc(String(a.trail_pct)) + '%</span><span class="pill">' + (a.open_positions || 0) + " open</span></div>";
+    }
+    return html;
+  }
+
+  /* ---------- live feed (real decisions) ---------- */
+
+  var AG_TAG = { scanner: "SCAN", auditor: "AUDIT", analyst: "ANLST", executor: "EXEC", risk: "RISK" };
+
+  function liveLines(limit) {
+    var lines = [];
+    var seen = {};
+    AGENTS.forEach(function (n) {
+      (((state.data.decisions[n] && state.data.decisions[n].decisions) || [])).forEach(function (d) {
+        var k = n + d.mint + d.ts;
+        if (seen[k]) return; seen[k] = 1;
+        lines.push({ agent: n, ts: d.ts, mint: d.mint, name: d.name, verdict: d.verdict, reason: d.reason });
+      });
+    });
+    var sc = ((state.data.state && state.data.state.agents) || []).filter(function (a) { return a.name === "scanner"; })[0];
+    ((sc && sc.feed) || []).forEach(function (f) {
+      var k = "scanner" + f.mint + f.ts;
+      if (seen[k]) return; seen[k] = 1;
+      lines.push({ agent: "scanner", ts: f.ts, mint: f.mint, name: f.name, verdict: f.verdict, reason: f.reason });
+    });
+    lines.sort(function (a, b) { return String(b.ts).localeCompare(String(a.ts)); });
+    return lines.slice(0, limit || 14);
+  }
+
+  var liveSeen = {};
+  function liveFeedCard() {
+    var lines = liveLines(14);
+    var html = '<div class="sec-h"><h2>Live feed</h2><span class="sec-r live-tag"><i></i>Live</span></div>';
+    html += '<div class="card term"><div class="term-top"><span class="tdots"><i></i><i></i><i></i></span><span>desk decisions · ' +
+      esc(isPaper() ? "paper" : "live") + "</span></div>";
+    if (!lines.length) {
+      html += '<div class="term-body"><div class="tl idle">&gt; waiting for the first coin<span class="caret"></span></div></div>';
+    } else {
+      html += '<div class="term-body">';
+      lines.forEach(function (l) {
+        var ok = l.verdict === "pass";
+        var key = l.agent + l.mint + l.ts;
+        var isNew = state.ready && Object.keys(liveSeen).length && !liveSeen[key];
+        html += '<div class="tl' + (isNew ? " new" : "") + '" data-coin="' + esc(l.mint) + '" data-agent-link="' + esc(l.agent) + '">' +
+          '<span class="tt">' + esc(fmtTime(l.ts)) + "</span>" +
+          '<span class="ta">' + esc(AG_TAG[l.agent] || l.agent) + "</span>" +
+          '<span class="tn">' + esc(l.name || (l.mint || "").slice(0, 6)) + "</span>" +
+          '<span class="tv ' + (ok ? "ok" : "no") + '">' + (ok ? "✓ passed" : "✕ " + esc(l.reason || "killed")) + "</span></div>";
+      });
+      html += '<div class="tl idle">&gt; scanning<span class="caret"></span></div></div>';
+      lines.forEach(function (l) { liveSeen[l.agent + l.mint + l.ts] = 1; });
     }
     html += "</div>";
     return html;
   }
 
-  /* ---------- pages ---------- */
+  /* ---------- activity rows ---------- */
 
+  function rowKind(r) {
+    var k = String(r.kind || "").toLowerCase();
+    if (k === "bought") return { cls: "buy", ic: "buy" };
+    if (k === "stopped") return { cls: "loss", ic: "stop" };
+    if (k === "sold") return classifyVal(r.value) === "down" ? { cls: "loss", ic: "sell" } : { cls: "win", ic: "sell" };
+    if (k === "rejected") return { cls: "skip", ic: "skip" };
+    return { cls: "skip", ic: "skip" };
+  }
+
+  function renderRows(rows) {
+    var html = '<div class="card list-card">';
+    rows.forEach(function (r) {
+      var rk = rowKind(r);
+      var parts = String(r.value || "").split(" · ");
+      var vc = classifyVal(parts[0]);
+      if (rk.cls === "buy") vc = "b";
+      var agent = AGENT_TITLE[(r.agent || "").toLowerCase()] || r.agent || "";
+      var sub = r.subtitle && !isIso(r.subtitle) ? r.subtitle : (r.kind === "bought" ? "buy" : "");
+      if (sub.indexOf(agent) === 0) sub = sub.slice(agent.length).replace(/^\s*(\(\w+\))?\s*·\s*/, "");
+      var details = [agent, sub, fmtWhen(r.ts)].filter(Boolean).join(" · ");
+      html += '<button class="act-row" data-row-mint="' + esc(r.mint || "") + '" data-row-agent="' + esc(r.agent || "") +
+        '" data-row-kind="' + esc(r.kind || "") + '">' +
+        '<span class="act-ic ' + rk.cls + '">' + ico(rk.ic) + "</span>" +
+        '<span class="act-mid"><span class="act-t">' + esc(r.title || "") + '</span><span class="act-s">' + esc(details) + "</span></span>" +
+        '<span class="act-r"><span class="act-v ' + vc + '">' + esc(parts[0] || "") + "</span>" +
+        (parts.length > 1 ? '<span class="act-v2">' + esc(parts.slice(1).join(" · ")) + "</span>" : "") + "</span></button>";
+    });
+    html += "</div>";
+    return html;
+  }
+
+  function emptyCard(title, sub, emoji) {
+    return '<div class="card empty-card"><div class="em-ic">' + (emoji || "🌙") + '</div><div class="em-t">' + esc(title) +
+      '</div><div class="em-s">' + esc(sub) + "</div></div>";
+  }
+
+  /* ---------- recap ---------- */
 
   function renderRecap() {
     var r = state.data.recap || {};
-    var html = '<div class="group recap-card"><div class="group-title">Session recap</div>';
-    html += '<div class="list">';
-    html += '<div class="list-row"><span class="lbl">Trades</span><span class="val num">' + esc(String(r.trades || 0)) + "</span></div>";
-    html += '<div class="list-row"><span class="lbl">Win rate</span><span class="val num">' + esc((r.win_rate == null ? 0 : r.win_rate) + "%") + "</span></div>";
-    html += '<div class="list-row"><span class="lbl">Stop rate</span><span class="val num">' + esc((r.stop_rate == null ? 0 : r.stop_rate) + "%") + "</span></div>";
     var net = r.net_pnl_usd;
-    var netCls = net > 0 ? "up" : net < 0 ? "down" : "";
-    html += '<div class="list-row"><span class="lbl">Net after fees</span><span class="val num ' + netCls + '">' +
-      esc((net == null ? "$0.00" : (net >= 0 ? "+$" : "-$") + Math.abs(Number(net)).toFixed(2))) + "</span></div>";
-    var bw = r.biggest_win;
-    html += '<div class="list-row"><span class="lbl">Biggest win</span><span class="val num">' +
-      esc(bw && bw.pnl_usd != null ? ((bw.pnl_usd >= 0 ? "+$" : "-$") + Math.abs(bw.pnl_usd).toFixed(2) + (bw.multiple ? " · " + Number(bw.multiple).toFixed(1) + "x" : "")) : "—") +
-      "</span></div>";
-    var bb = r.biggest_buy;
-    html += '<div class="list-row"><span class="lbl">Biggest buy</span><span class="val num">' +
-      esc(bb && bb.size_usd != null ? "$" + Number(bb.size_usd).toFixed(2) : "—") + "</span></div>";
-    var miles = r.milestones_hit || [];
-    var xs = miles.map(function (m) { return (m.multiple != null ? m.multiple : m) + "x"; }).join(", ");
-    html += '<div class="list-row"><span class="lbl">Milestones</span><span class="val">' + esc(xs || "none yet") + "</span></div>";
-    html += "</div></div>";
+    var netCls = net > 0 ? "g" : net < 0 ? "r" : "";
+    var bw = r.biggest_win, bb = r.biggest_buy;
+    var miles = (r.milestones_hit || []).map(function (m) { return (m && m.multiple != null ? m.multiple : m) + "x"; });
+    var html = '<div class="sec-h"><h2>Session recap</h2><span class="sec-r">' + esc(r.since ? "since " + fmtWhen(r.since) : "") + "</span></div>";
+    html += '<div class="card recap-grid">';
+    html += tile("Trades", String(r.trades || 0));
+    html += tile("Win rate", (r.win_rate == null ? 0 : r.win_rate) + "%");
+    html += tile("Stop rate", (r.stop_rate == null ? 0 : r.stop_rate) + "%");
+    html += tile("Net after fees", net == null ? "$0.00" : (net >= 0 ? "+$" : "-$") + Math.abs(Number(net)).toFixed(2), netCls);
+    html += tile("Biggest win", bw && bw.pnl_usd != null ? ((bw.pnl_usd >= 0 ? "+$" : "-$") + Math.abs(bw.pnl_usd).toFixed(2) + (bw.multiple ? " · " + Number(bw.multiple).toFixed(1) + "x" : "")) : "—", bw ? "g" : "");
+    html += tile("Biggest buy", bb && bb.size_usd != null ? "$" + Number(bb.size_usd).toFixed(2) : "—");
+    html += '<div class="miles"><span class="lbl">Milestones</span>' + ["2x", "5x", "10x"].map(function (x) {
+      return '<span class="mile' + (miles.indexOf(x) !== -1 ? " hit" : "") + '">' + x + "</span>";
+    }).join("") + "</div>";
+    html += "</div>";
     return html;
   }
+
+  function tile(k, v, cls) {
+    return '<div class="tile"><div class="tk">' + esc(k) + '</div><div class="tv ' + (cls || "") + '">' + esc(v) + "</div></div>";
+  }
+
+  /* ---------- pages ---------- */
 
   function pageHome() {
     var st = state.data.state || {};
     var chart = state.data.charts[state.range] || {};
     var marks = chart.marks || [];
-    var emptyChart = !marks.length;
-    var today = st.today_pct;
-    var cls = today > 0 ? "up" : today < 0 ? "down" : "flat";
-    var running = (st.agents || []).filter(function (a) { return a.status === "running"; }).length;
-    var html = navbarHome() + bannerHtml() + '<div class="screen with-tabs">';
-    html += '<div class="balance-block"><div class="balance-row" id="bal-row">';
-    html += renderOdometer(st.balance);
-    html += paperBadge();
-    html += "</div>";
-    html += '<div class="meta-row"><span class="' + cls + '">' +
-      (today > 0 ? "+" : "") + (today == null ? "0.00%" : Number(today).toFixed(2) + "%") +
-      '</span><span class="mult-pill">' + esc(fmtMult(st.multiplier)) + "</span></div></div>";
+    var bal = Number(st.balance);
+    var start = startStack();
+    var diff = start != null && !isNaN(bal) ? bal - start : null;
+    var pct = start ? (diff / start) * 100 : null;
+    var cls = diff > 0.004 ? "up" : diff < -0.004 ? "down" : "flat";
+    var arrow = cls === "up" ? "▲" : cls === "down" ? "▼" : "•";
+    var mult = st.multiplier;
+    var html = header() + bannerHtml() + '<div class="screen with-tabs">';
+    html += '<section class="hero">';
+    html += '<div class="bal-row"><div class="bal" id="bal-num">' + esc(fmtUsd(balShown != null ? balShown : bal)) + "</div>" +
+      '<span class="mult ' + (mult > 1.0001 ? "up" : mult < 0.9999 ? "down" : "") + '">' + esc(fmtMult(mult)) + "</span></div>";
+    html += '<div class="chg ' + cls + '">' + arrow + " " + esc(diff == null ? "$0.00" : fmtUsd(Math.abs(diff))) +
+      " (" + esc(pct == null ? "0.00%" : Math.abs(pct).toFixed(2) + "%") + ')<span class="chg-note"> vs start ' +
+      esc(start != null ? fmtUsd(start) : "") + "</span></div>";
+    html += '<div class="chg-today">Today ' + esc(st.today_pct == null ? "0.00%" : fmtPct(st.today_pct)) + (isPaper() ? " · paper stack" : "") + "</div>";
+    html += "</section>";
     html += '<div class="chart-wrap"><canvas id="home-chart"></canvas>' +
-      (emptyChart ? '<div class="chart-empty">Waiting for the first trade</div>' : "") + "</div>";
+      (!marks.length ? '<div class="chart-empty">No trades in this range yet · watching the market</div>' : "") + "</div>";
     html += '<div class="ranges">' + RANGES.map(function (r) {
-      return '<button data-range="' + r + '" class="' + (state.range === r ? "on" : "") + '">' + r + "</button>";
+      return '<button data-range="' + r + '" class="' + (state.range === r ? "on" : "") + '">' + (r === "LIVE" ? "<i></i>" : "") + r + "</button>";
     }).join("") + "</div>";
-    html += renderRecap();
-    html += '<div class="section-h"><h2>Agents <span class="sub">· ' + running + " running</span></h2></div>";
-    html += '<div class="carousel">';
-    (st.agents || []).forEach(function (a) {
-      html += '<article class="agent-card" data-agent="' + esc(a.name) + '" data-go-agent="' + esc(a.name) + '">' +
-        agentCardInner(a, false) + "</article>";
-    });
-    html += "</div>";
-    html += '<div class="section-h"><h2>Activity</h2><button class="link" data-go="activity">See all</button></div>';
-    var rows = ((state.data.activity && state.data.activity.rows) || []).slice(0, 5);
-    if (!rows.length) html += '<div class="empty">Nothing yet tonight</div>';
+    html += agentsCard(st.agents || []);
+    html += liveFeedCard();
+    var all = (state.data.activity && state.data.activity.rows) || [];
+    html += '<div class="sec-h"><h2>Activity</h2><button class="sec-r link" data-go="activity">See all</button></div>';
+    var rows = all.slice(0, 5);
+    if (!rows.length) html += emptyCard("Nothing yet tonight", "Buys, sells and stops show up here the moment they happen.", "🌙");
     else html += renderRows(rows);
+    html += renderRecap();
+    html += '<div class="foot">Real desk data · ' + esc(isPaper() ? "PAPER mode, no real money" : "LIVE") + "</div>";
     html += "</div>" + tabbar();
-    return html;
-  }
-
-  function renderRows(rows) {
-    var html = '<div class="rows">';
-    rows.forEach(function (r) {
-      var vc = classifyVal(r.value);
-      html += '<button class="row" data-row-mint="' + esc(r.mint || "") + '" data-row-agent="' + esc(r.agent || "") +
-        '" data-row-kind="' + esc(r.kind || "") + '">' +
-        '<div class="t">' + esc(r.title || "") + "</div>" +
-        '<div class="v ' + vc + '">' + esc(r.value || "") + "</div>" +
-        '<div class="s">' + esc(r.subtitle || "") + (r.ts ? " · " + fmtTime(r.ts) : "") + "</div>" +
-        "</button>";
-    });
-    html += "</div>";
     return html;
   }
 
   function pageAgents() {
     var st = state.data.state || {};
-    var html = navbarHome() + bannerHtml() + '<div class="screen with-tabs">';
-    (st.agents || []).forEach(function (a) {
-      html += '<article class="agent-card wide" data-agent="' + esc(a.name) + '">' + agentCardInner(a, true);
-      var openPos = a.name === "risk" && a.open_positions > 0;
-      if (openPos) {
-        html += '<div class="tg-note">Risk is locked while a position is open. Change in Telegram: <code class="cmd">/pause risk</code></div>';
-      } else {
-        html += '<div class="tg-note">Pause or resume in Telegram: <code class="cmd">/' +
-          (a.status === "paused" ? "resume" : "pause") + " " + esc(a.name) + "</code></div>";
-      }
+    var agents = st.agents || [];
+    var running = agents.filter(agentAlive).length;
+    var html = header() + bannerHtml() + '<div class="screen with-tabs">';
+    html += '<div class="page-h"><h1>Agents</h1><span class="sec-r ' + (running ? "g" : "") + '">' + running + " running</span></div>";
+    agents.forEach(function (a) {
+      var s = agentSummary(a);
+      var alive = agentAlive(a);
+      html += '<article class="card ag-card" id="agent-' + esc(a.name) + '">';
+      html += '<div class="ag-row static"><span class="ag-ic">' + (AGENT_EMOJI[a.name] || "🤖") + '<i class="ag-dot ' + (alive ? "on" : (a.status === "paused" ? "paused" : "down")) + '"></i></span>' +
+        '<span class="ag-mid"><span class="ag-name">' + esc(AGENT_TITLE[a.name] || a.name) + '</span><span class="ag-sub">' +
+        esc((a.status || "") + (a.heartbeat ? " · beat " + fmtTime(a.heartbeat) : "")) + '</span></span><span class="ag-metric ' + s.mcls + '">' + esc(s.metric) + "</span></div>";
+      html += '<div class="ag-body">' + agentDetail(a);
+      if (a.name === "risk" && a.open_positions > 0) html += '<div class="tg-note">Risk is locked while a position is open. Change in Telegram: <code class="cmd">/pause risk</code></div>';
+      else html += '<div class="tg-note">Pause or resume in Telegram: <code class="cmd">/' + (a.status === "paused" ? "resume" : "pause") + " " + esc(a.name) + "</code></div>";
       html += '<div class="tg-note">Settings: <code class="cmd">/set ' + esc(a.name) + ".</code></div>";
       var dec = (state.data.decisions[a.name] && state.data.decisions[a.name].decisions) || [];
       if (dec.length) {
-        html += '<ul class="feed" style="margin-top:10px">';
+        html += '<div class="mini-h">Recent decisions</div><ul class="feed">';
         dec.slice(0, 20).forEach(function (d) {
-          html += '<li data-coin="' + esc(d.mint) + '" data-agent-link="' + esc(a.name) + '">' +
+          html += '<li class="' + (d.verdict === "pass" ? "pass" : "kill") + '" data-coin="' + esc(d.mint) + '" data-agent-link="' + esc(a.name) + '">' +
             '<span class="nm">' + esc(fmtTime(d.ts) + " · " + (d.name || "")) + "</span>" +
             '<span class="why">' + esc((d.verdict || "") + (d.reason ? " · " + d.reason : "")) + "</span></li>";
         });
         html += "</ul>";
       }
-      html += "</article>";
+      html += "</div></article>";
     });
+    if (!agents.length) html += emptyCard("No agents yet", "The desk hasn't published agent status.", "🤖");
     html += "</div>" + tabbar();
     return html;
   }
 
   function pageActivity() {
     var rows = (state.data.activity && state.data.activity.rows) || [];
-    var html = navbarHome() + bannerHtml() + '<div class="screen with-tabs">';
-    html += '<div class="section-h"><h2>Activity</h2></div>';
-    if (!rows.length) html += '<div class="empty">Nothing yet tonight</div>';
+    var html = header() + bannerHtml() + '<div class="screen with-tabs">';
+    html += '<div class="page-h"><h1>Activity</h1><span class="sec-r">' + rows.length + " events</span></div>";
+    if (!rows.length) html += emptyCard("Nothing yet tonight", "Buys, sells, stops and skips show up here.", "🌙");
     else html += renderRows(rows);
     html += "</div>" + tabbar();
     return html;
   }
 
+  var openGroups = {};
   /* settings meta */
   var SETTING_META = {
     "scanner.min_liquidity_usd": { min: 1000, max: 500000, step: 500 },
@@ -1133,8 +1361,11 @@
   function pageAccount() {
     var acc = state.data.account || {};
     var stg = (state.data.settings && state.data.settings.settings) || {};
-    var html = navbarHome() + bannerHtml() + '<div class="screen with-tabs">';
-    html += '<div class="section-h"><h2>Account</h2></div>';
+    var html = header() + bannerHtml() + '<div class="screen with-tabs">';
+    html += '<div class="page-h"><h1>Account</h1><span class="sec-r">' + esc(acc.fomo_handle || "") + "</span></div>";
+    html += '<div class="card acct-hero"><img class="app-ic lg" src="icons/icon-192.png" alt=""><div><div class="ah-k">' +
+      esc(isPaper() ? "Paper stack" : "Stack") + '</div><div class="ah-v">' + esc(fmtUsd(acc.balance != null ? acc.balance : acc.stack)) +
+      '</div><div class="ah-s">started at ' + esc(fmtUsd(acc.stack)) + "</div></div>" + paperBadge() + "</div>";
     html += '<div class="list">';
     html += '<div class="list-row"><span class="lbl">Mode</span><div class="seg">' +
       '<button class="' + (mode() === "PAPER" ? "on" : "") + '" disabled>PAPER</button>' +
@@ -1145,6 +1376,7 @@
       esc(acc.stack == null ? "" : acc.stack) + "</code>. Switching to LIVE needs a full PAPER night and you typing LIVE.</div>";
 
     html += renderRecap();
+    html += '<div class="mini-h pad">Profile &amp; settings · change in Telegram</div>';
     html += '<div class="group"><div class="group-title">FOMO</div><div class="list">';
     if (acc.profile_url) {
       html += '<a class="list-row" href="' + esc(acc.profile_url) + '" rel="noopener" target="_blank"><span class="lbl">Your FOMO profile</span><span class="val">' +
@@ -1166,11 +1398,12 @@
       ["executor", "Executor"], ["risk", "Risk"], ["devwatch", "Dev Watch"], ["exits", "Exits"], ["milestones", "Milestones"], ["xscout", "X scout"], ["desk", "Desk"]
     ];
     groups.forEach(function (g) {
-      html += '<div class="group"><div class="group-title">' + g[1] + "</div><div class=\"list\">";
-      Object.keys(stg).sort().forEach(function (k) {
-        if (k.split(".")[0] === g[0]) html += settingControl(k, stg[k]);
-      });
-      html += "</div></div>";
+      var keys = Object.keys(stg).sort().filter(function (k) { return k.split(".")[0] === g[0]; });
+      if (!keys.length) return;
+      html += '<details class="group set-group"' + (openGroups[g[0]] ? " open" : "") + ' data-group="' + g[0] + '"><summary class="group-title">' + g[1] +
+        '<span class="cnt">' + keys.length + "</span></summary><div class=\"list\">";
+      keys.forEach(function (k) { html += settingControl(k, stg[k]); });
+      html += "</div></details>";
     });
     html += "</div>" + tabbar();
     return html;
@@ -1258,7 +1491,7 @@
         "</div></div>";
     } else if (audit.reason && checked.length) {
       html += '<div class="audit-status bad"><div class="big">Rejected · ' + esc(audit.reason) + "</div>" +
-        '<div class="sub">Grok Bot won\'t buy ' + esc(audit.name || "") + "</div></div>";
+        '<div class="sub">The desk won\'t buy ' + esc(audit.name || "") + "</div></div>";
     } else {
       html += '<div class="audit-status"><div class="big">taking apart...</div></div>';
     }
@@ -1347,17 +1580,13 @@
 
   var root = document.getElementById("app");
   var lastScreen = null;
+  var scrollMem = {};
 
-  function paint() {
-    if (!CFG.t || !CFG.d) {
-      root.innerHTML = lockScreen();
-      return;
-    }
-    if (state.boot && !state.ready) {
-      root.innerHTML = skeletonHome();
-      bind();
-      return;
-    }
+  function paint(nav) {
+    if (!CFG.t || !CFG.d) { root.innerHTML = lockScreen(); return; }
+    if (state.boot && !state.ready) { root.innerHTML = skeletonHome(); bind(); return; }
+    var sc = root.querySelector(".screen");
+    if (sc && lastScreen) scrollMem[lastScreen] = sc.scrollTop;
     var html;
     if (state.screen === "home") html = pageHome();
     else if (state.screen === "agents") html = pageAgents();
@@ -1369,6 +1598,11 @@
     else if (state.screen === "notifs") html = pageNotifs();
     else html = pageHome();
     root.innerHTML = html;
+    var sc2 = root.querySelector(".screen");
+    if (sc2) {
+      if (nav === true) { sc2.classList.add("enter"); if (state.screen !== lastScreen) scrollMem[state.screen] = 0; }
+      sc2.scrollTop = scrollMem[state.screen] || 0;
+    }
     bind();
     afterPaint();
     lastScreen = state.screen;
@@ -1377,38 +1611,19 @@
   function paintBannerOnly() {
     var b = root.querySelector(".banner");
     var html = bannerHtml();
-    if (!html) {
-      if (b) b.remove();
-      return;
-    }
+    if (!html) { if (b) b.remove(); return; }
     if (b) b.outerHTML = html;
-    else {
-      var nav = root.querySelector(".navbar");
-      if (nav) nav.insertAdjacentHTML("afterend", html);
-    }
+    else { var nav = root.querySelector(".hdr"); if (nav) nav.insertAdjacentHTML("afterend", html); }
+    var hs = document.getElementById("hdr-status");
+    if (hs) hs.innerHTML = statusPill();
   }
 
   function afterPaint() {
-    kickOdometer(root.querySelector("#bal-row"));
-    var hc = root.querySelector("#home-chart");
-    if (hc) {
-      var ch = state.data.charts[state.range];
-      if (ch) {
-        if (chartAnim.range !== state.range) {
-          chartAnim = { range: state.range, from: null, to: ch.points, start: performance.now(), marksOn: performance.now() };
-        } else {
-          var prev = chartAnim.to;
-          if (prev && ch.points && ch.points.length > prev.length) {
-            chartAnim.from = prev;
-            chartAnim.to = ch.points;
-            chartAnim.start = performance.now();
-            chartAnim.marksOn = performance.now();
-          } else {
-            chartAnim.to = ch.points;
-          }
-        }
-        drawLineChart(hc, ch, true);
-      }
+    var st = state.data.state || {};
+    if (state.screen === "home") {
+      animateBalance(st.balance);
+      var hc = root.querySelector("#home-chart");
+      if (hc && state.data.charts[state.range]) { drawLineChart(hc, state.data.charts[state.range]); runChartLoop(); }
     }
     root.querySelectorAll("canvas.score-ring").forEach(function (c) {
       var s = c.getAttribute("data-score");
@@ -1422,11 +1637,7 @@
       drawDiscs(ac, state.data.audits[state.mint]);
     }
     var si = root.querySelector("#search-in");
-    if (si) {
-      si.focus();
-      var val = si.value;
-      si.selectionStart = si.selectionEnd = val.length;
-    }
+    if (si) { si.focus(); var val = si.value; si.selectionStart = si.selectionEnd = val.length; }
   }
 
   function bind() {
@@ -1440,64 +1651,51 @@
       el.addEventListener("click", function () {
         state.range = el.getAttribute("data-range");
         paint();
-        getJson("chart-" + state.range + ".json").then(function (j) {
-          state.data.charts[state.range] = j;
-          paint();
-        }).catch(function () {});
+        getJson("chart-" + state.range + ".json").then(function (j) { state.data.charts[state.range] = j; paint(); }).catch(function () {});
       });
     });
     root.querySelectorAll("[data-go-agent]").forEach(function (el) {
-      el.addEventListener("click", function () { go("agents"); });
+      el.addEventListener("click", function () {
+        var name = el.getAttribute("data-go-agent");
+        go("agents");
+        var card = document.getElementById("agent-" + name);
+        if (card) card.scrollIntoView({ block: "start", behavior: reduced() ? "auto" : "smooth" });
+      });
     });
     root.querySelectorAll("[data-row-mint]").forEach(function (el) {
       el.addEventListener("click", function () {
-        openRow({
-          mint: el.getAttribute("data-row-mint"),
-          agent: el.getAttribute("data-row-agent"),
-          kind: el.getAttribute("data-row-kind")
-        });
+        openRow({ mint: el.getAttribute("data-row-mint"), agent: el.getAttribute("data-row-agent"), kind: el.getAttribute("data-row-kind") });
       });
     });
     root.querySelectorAll("[data-coin]").forEach(function (el) {
       el.addEventListener("click", function (ev) {
         ev.stopPropagation();
         var mint = el.getAttribute("data-coin");
+        if (!mint) return;
         var agent = el.getAttribute("data-agent-link") || "";
         if (agent === "auditor" || agent === "analyst") go("audit", { mint: mint });
         else go("coin", { mint: mint });
       });
     });
-    root.querySelectorAll("[data-act='invite']").forEach(function (el) {
-      el.addEventListener("click", invite);
+    root.querySelectorAll("details.set-group").forEach(function (el) {
+      el.addEventListener("toggle", function () { openGroups[el.getAttribute("data-group")] = el.open; });
     });
+    root.querySelectorAll("[data-act='invite']").forEach(function (el) { el.addEventListener("click", invite); });
     var si = root.querySelector("#search-in");
-    if (si) {
-      si.addEventListener("input", function () {
-        state.query = si.value;
-        paint();
-      });
-    }
+    if (si) si.addEventListener("input", function () { state.query = si.value; paint(); });
   }
 
   function invite() {
     var url = state.data.account && state.data.account.signup_url;
     if (!url) return;
-    if (navigator.share) {
-      navigator.share({ title: "FOMO", url: url }).catch(function () { copyLink(url); });
-    } else copyLink(url);
+    if (navigator.share) navigator.share({ title: "FOMO", url: url }).catch(function () { copyLink(url); });
+    else copyLink(url);
   }
 
   function copyLink(url) {
-    function toast() {
-      var t = document.createElement("div");
-      t.className = "toast";
-      t.textContent = "Link copied";
-      document.body.appendChild(t);
-      setTimeout(function () { t.remove(); }, 1600);
-    }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(url).then(toast).catch(function () { fallback(url, toast); });
-    } else fallback(url, toast);
+    function done() { toast({ kind: "info", title: "Link copied", sub: "", val: "" }); }
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done).catch(function () { fallback(url, done); });
+    else fallback(url, done);
   }
 
   function fallback(url, done) {
@@ -1517,14 +1715,14 @@
     pollTimer = setInterval(function () { refresh(); }, POLL_MS);
   }
 
-  window.addEventListener("resize", function () {
-    afterPaint();
-  });
+  window.addEventListener("resize", function () { afterPaint(); });
+  document.addEventListener("visibilitychange", function () { if (!document.hidden && CFG.t && CFG.d) refresh(); });
+  setInterval(function () {
+    var hs = document.getElementById("hdr-status");
+    if (hs) hs.innerHTML = statusPill();
+  }, 10000);
 
-  if (!CFG.t || !CFG.d) {
-    paint();
-    return;
-  }
+  if (!CFG.t || !CFG.d) { paint(); return; }
   paint();
   refresh().then(startPoll);
 })();

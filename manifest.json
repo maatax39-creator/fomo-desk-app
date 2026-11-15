@@ -1,6 +1,6 @@
 {
-  "name": "Grok Bot",
-  "short_name": "Grok Bot",
+  "name": "FOMO Desk",
+  "short_name": "FOMO Desk",
   "description": "Private FOMO trading desk",
   "start_url": "./",
   "scope": "./",
