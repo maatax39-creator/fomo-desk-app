@@ -985,10 +985,18 @@
       metric = a.score == null ? "no score" : "score " + a.score;
       mcls = a.score != null && a.score >= (a.min_score || 70) ? "g" : "";
     } else if (n === "executor") {
-      sub = a.last_size_usd != null ? "Last " + fmtUsd(a.last_size_usd) + " · " + a.stack_pct + "% of stack" : "Waiting for a signal · " + a.stack_pct + "% sizing";
-      metric = (a.count || 0) + " trades";
+      var waits = a.waiting_dips || [];
+      if (waits.length) {
+        sub = "Waiting for a dip −" + (a.dip_pct != null ? a.dip_pct : 15) + "%";
+        metric = waits.length + " waiting";
+        mcls = "";
+      } else {
+        sub = a.last_size_usd != null ? "Last " + fmtUsd(a.last_size_usd) + " · " + a.stack_pct + "% of stack" : "Waiting for a signal · " + a.stack_pct + "% sizing";
+        metric = (a.count || 0) + " trades";
+      }
     } else if (n === "risk") {
       sub = (a.headline || "Guarding") + " · stop −" + a.stop_pct + "% · trail " + a.trail_pct + "%";
+      if (a.tp_x) sub += " · TP " + a.tp_x + "x";
       metric = (a.open_positions || 0) + " open";
       mcls = a.open_positions ? "g" : "";
     } else {
@@ -1057,11 +1065,25 @@
         esc(String(a.min_score || 70)) + (a.mode ? " · " + esc(a.mode) : "") + "</div></div></div>";
     } else if (name === "executor") {
       var sz = a.last_size_usd;
-      html += '<div class="exec-line">' + (sz != null ? esc(fmtUsd(sz)) + " · " + esc(String(a.stack_pct)) + "% of stack" : "No fills yet") + "</div>";
-      if (sz != null) html += '<div class="exec-ok">✓ Filled (paper)</div>';
+      var waits = a.waiting_dips || [];
+      if (waits.length) {
+        html += '<div class="exec-line">Waiting for a dip −' + esc(String(a.dip_pct != null ? a.dip_pct : 15)) + "% (up to " +
+          esc(String(a.dip_wait_min != null ? a.dip_wait_min : 30)) + " min)</div>";
+        html += '<ul class="feed">';
+        waits.forEach(function (w) {
+          html += '<li class="pass" data-coin="' + esc(w.mint || "") + '"><span class="nm">' + esc(w.name || (w.mint || "").slice(0, 6)) +
+            "</span><span class="why">waiting for dip</span></li>";
+        });
+        html += "</ul>";
+      } else {
+        html += '<div class="exec-line">' + (sz != null ? esc(fmtUsd(sz)) + " · " + esc(String(a.stack_pct)) + "% of stack" : "No fills yet") + "</div>";
+        if (sz != null) html += '<div class="exec-ok">✓ Filled (paper)</div>';
+      }
     } else if (name === "risk") {
       html += '<div class="pills"><span class="pill red">stop −' + esc(String(a.stop_pct)) + '%</span><span class="pill green">trail ' +
-        esc(String(a.trail_pct)) + '%</span><span class="pill">' + (a.open_positions || 0) + " open</span></div>";
+        esc(String(a.trail_pct)) + '%</span>';
+      if (a.tp_x) html += '<span class="pill">TP ' + esc(String(a.tp_x)) + "x / " + esc(String(a.tp_sell_pct || 50)) + "%</span>";
+      html += '<span class="pill">' + (a.open_positions || 0) + " open</span></div>";
     }
     return html;
   }
@@ -1125,6 +1147,7 @@
     if (k === "stopped") return { cls: "loss", ic: "stop" };
     if (k === "sold") return classifyVal(r.value) === "down" ? { cls: "loss", ic: "sell" } : { cls: "win", ic: "sell" };
     if (k === "rejected") return { cls: "skip", ic: "skip" };
+    if (k === "waiting") return { cls: "skip", ic: "skip" };
     return { cls: "skip", ic: "skip" };
   }
 
@@ -1330,7 +1353,23 @@
     "desk.push_rejects": { type: "bool" },
     "desk.fees_ref_discount": { min: 0, max: 0.5, step: 0.01 },
     "desk.fomo_handle": { type: "text" },
-    "desk.publish_s": { min: 5, max: 60, step: 1 }
+    "desk.publish_s": { min: 5, max: 60, step: 1 },
+    "desk.lock_time": { type: "time" },
+    "scanner.min_holders_growth_pct": { min: -50, max: 100, step: 1 },
+    "auditor.max_insiders_pct": { min: 0, max: 100, step: 1 },
+    "analyst.fast_curve_min": { min: 0, max: 120, step: 1 },
+    "analyst.max_fresh_pct": { min: 0, max: 100, step: 1 },
+    "entry.mode": { type: "enum", options: ["dip", "immediate"] },
+    "entry.dip_pct": { min: 1, max: 50, step: 1 },
+    "entry.dip_window_min": { min: 1, max: 60, step: 1 },
+    "entry.dip_wait_min": { min: 1, max: 180, step: 1 },
+    "entry.crash_pct": { min: 5, max: 90, step: 1 },
+    "entry.sellers_ratio": { min: 0, max: 10, step: 0.1 },
+    "risk.tp_x": { min: 1.1, max: 20, step: 0.1 },
+    "risk.tp_sell_pct": { min: 1, max: 100, step: 1 },
+    "exits.pulled_pct": { min: 10, max: 100, step: 1 },
+    "risk.dev_dump_pct": { min: 1, max: 100, step: 1 },
+    "risk.dev_poll_s": { min: 15, max: 300, step: 5 }
   };
 
   function settingControl(key, value) {
@@ -1444,10 +1483,17 @@
     html += stat("24h volume", shortUsd(coin.volume_h24));
     html += stat("Holders", coin.holders == null ? "n/a" : String(coin.holders));
     html += "</div>";
+    if (coin.dip_wait && coin.dip_wait.status === "waiting") {
+      html += '<div class="pos-card"><div class="ph">Waiting for dip · Executor</div><div class="pb">' +
+        (coin.dip_wait.size_usd != null ? esc(fmtUsd(coin.dip_wait.size_usd)) + " reserved" : "waiting for dip") +
+        "</div></div>";
+    }
     var pos = coin.position;
     var openPos = pos && (pos.status === "open" || pos.status === "exiting" || (!pos.closed_at && pos.entry_price));
     if (openPos) {
-      html += '<div class="pos-card"><div class="ph">Your position · Executor</div><div class="pb">' +
+      var ph = "Your position · Executor";
+      if (pos.tp_done) ph = "Partial take-profit done · trailing";
+      html += '<div class="pos-card"><div class="ph">' + ph + '</div><div class="pb">' +
         esc(fmtUsd(pos.size_usd)) + " in</div></div>";
     }
     if (openPos && coin.exit_lines) {
@@ -1458,6 +1504,11 @@
       html += '<div class="val-row"><span class="vn">Trail line</span><span class="vv">' +
         esc(el.trail != null ? String(el.trail) : (el.trail_active ? "—" : "not active")) +
         (el.trail_pct != null ? " · " + Number(el.trail_pct).toFixed(2) + "%" : "") + "</span></div>";
+      if (el.tp_x) {
+        html += '<div class="val-row"><span class="vn">Take profit</span><span class="vv">' +
+          (el.tp_done ? "50% taken" : esc(String(el.tp_x)) + "x / " + esc(String(el.tp_sell_pct || 50)) + "%") +
+          "</span></div>";
+      }
       var left = el.timeout_left_h;
       html += '<div class="val-row"><span class="vn">Time left</span><span class="vv">' +
         (left == null ? "—" : Number(left).toFixed(2) + "h") + "</span></div>";
