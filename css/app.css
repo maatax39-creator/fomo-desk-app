@@ -163,6 +163,7 @@ img, canvas { display: block; }
 .layer-strip .mark { width: 15px; height: 15px; border-radius: 50%; background: #222; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 9px; color: #000; font-weight: 800; }
 .layer-strip.ok .mark { background: var(--green); box-shadow: 0 0 6px var(--green-glow); }
 .layer-strip.bad .mark { background: var(--red); color: #fff; }
+.layer-strip.unk .mark { background: var(--amber); color: #000; }
 .score-row { display: flex; align-items: center; gap: 16px; }
 .score-ring { width: 104px; height: 104px; flex-shrink: 0; }
 .big-sub { font-weight: 700; font-size: 16px; margin-bottom: 2px; }
@@ -306,6 +307,7 @@ img, canvas { display: block; }
 .val-row .vv { font-weight: 600; text-align: right; }
 .val-row.ok .vv { color: var(--green); }
 .val-row.bad .vv { color: var(--red); }
+.val-row.unk .vv { color: var(--amber); }
 
 /* ---------- search / sheets ---------- */
 .overlay { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; flex-direction: column; padding-top: var(--safe-t); padding-bottom: var(--safe-b); overflow-y: auto; }

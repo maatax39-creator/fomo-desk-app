@@ -825,9 +825,11 @@
       var shown = i < beam.revealed;
       var passing = shown && ly.checked && ly.pass === true;
       var failing = shown && ly.checked && ly.pass === false;
+      var unknown = passing && isUnknown(ly);
       ctx.beginPath();
       ctx.ellipse(cx, y, r, 11, 0, 0, Math.PI * 2);
-      if (passing) ctx.fillStyle = "rgba(74,222,128,0.85)";
+      if (unknown) ctx.fillStyle = "rgba(251,191,36,0.85)";
+      else if (passing) ctx.fillStyle = "rgba(74,222,128,0.85)";
       else if (failing) ctx.fillStyle = "rgba(248,113,113,0.85)";
       else ctx.fillStyle = "#1f1f1f";
       ctx.fill();
@@ -1042,8 +1044,8 @@
         html += '<div class="layers-grid">';
         for (var i = 1; i <= 8; i++) {
           var ly = layers.filter(function (x) { return x.n === i; })[0];
-          var cls = !ly || ly.value === "not checked" || ly.pass == null ? "wait" : (ly.pass ? "ok" : "bad");
-          html += '<div class="layer-strip ' + cls + '"><span class="mark">' + (cls === "ok" ? "✓" : cls === "bad" ? "✕" : "") + "</span>" +
+          var cls = !ly || ly.value === "not checked" || ly.pass == null ? "wait" : (isUnknown(ly) ? "unk" : (ly.pass ? "ok" : "bad"));
+          html += '<div class="layer-strip ' + cls + '"><span class="mark">' + (cls === "ok" ? "✓" : cls === "bad" ? "✕" : cls === "unk" ? "?" : "") + "</span>" +
             esc((ly && ly.name) || ("Layer " + i)) + "</div>";
         }
         html += "</div>";
@@ -1288,6 +1290,8 @@
     "auditor.bundled_min_wallets": { min: 1, max: 20, step: 1 },
     "auditor.max_liq_drop_pct": { min: 1, max: 100, step: 1 },
     "auditor.retry_gap_s": { min: 1, max: 30, step: 1 },
+    "auditor.unknown_bundles": { type: "enum", options: ["penalize", "reject"] },
+    "analyst.unknown_bundles_penalty": { min: 0, max: 50, step: 1 },
     "analyst.mode": { type: "enum", options: ["rules", "jev"] },
     "analyst.min_alive_6h": { min: 0, max: 1, step: 0.01 },
     "analyst.min_organic": { min: 0, max: 1, step: 0.01 },
@@ -1467,6 +1471,10 @@
     return html;
   }
 
+  function isUnknown(ly) {
+    return !!ly && (ly.status === "unknown" || (typeof ly.value === "string" && ly.value.indexOf("unknown") === 0));
+  }
+
   function stat(k, v) {
     return '<div class="stat"><div class="k">' + esc(k) + '</div><div class="stat-val">' + esc(v) + "</div></div>";
   }
@@ -1497,7 +1505,7 @@
     }
     html += '<div class="val-rows">';
     audit.layers.forEach(function (ly) {
-      var cls = !ly.checked ? "" : (ly.pass ? "ok" : "bad");
+      var cls = !ly.checked ? "" : (isUnknown(ly) ? "unk" : (ly.pass ? "ok" : "bad"));
       html += '<div class="val-row ' + cls + '"><span class="vn">' + esc(ly.name) + '</span><span class="vv">' +
         esc(ly.value || (ly.checked ? "" : "…")) + "</span></div>";
     });
